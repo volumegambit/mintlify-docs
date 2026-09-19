@@ -11,8 +11,8 @@
 ## Terminology
 
 - **DashSquad** — the product name on this site (`name` in `docs.json`). Some pages still say "Dash"; use DashSquad in new titles and copy.
-- **Mission Control** — the desktop app. Always capitalized.
-- **gateway** — the background service that runs agents. Lowercase in running text.
+- **Desktop** — the desktop app (formerly Mission Control). Capitalized when it names the app.
+- **HQ** — the background process that runs squad members (formerly the gateway). Always uppercase.
 - **agent** / **squad member** — an AI agent the user runs. The user's set of agents is their **squad**.
 - **sub-agent** — a helper an agent starts to take part of a job.
 
