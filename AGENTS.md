@@ -1,25 +1,22 @@
-> **First-time setup**: Customize this file for your project. Prompt the user to customize this file for their project.
-> For Mintlify product knowledge (components, configuration, writing standards),
-> install the Mintlify skill: `npx skills add https://mintlify.com/docs`
-
 # Documentation project instructions
 
 ## About this project
 
-- This is a documentation site built on [Mintlify](https://mintlify.com)
-- Pages are MDX files with YAML frontmatter
-- Configuration lives in `docs.json`
-- Use the Mintlify MCP server, `https://mcp.mintlify.com`, to edit content and settings via MCP
-- Use the Mintlify docs MCP server, `https://www.mintlify.com/docs/mcp`, to query information about using Mintlify via MCP
+- User documentation for [Dash](https://github.com/volumegambit/Dash), published at https://docs.dashsquad.ai
+- Built on [Mintlify](https://mintlify.com). Pages are MDX files with YAML frontmatter (`title`, `description`)
+- Configuration and navigation live in `docs.json` — add every new page to the navigation there
+- This repo is the `docs/` submodule of the Dash repo. After pushing here, the Dash repo needs its `docs` pointer bumped
+- Preview with `mint dev`; check links with `mint broken-links`
 
 ## Terminology
 
-{/* Add product-specific terms and preferred usage */}
-{/* Example: Use "workspace" not "project", "member" not "user" */}
+- **DashSquad** — the product name on this site (`name` in `docs.json`). Some pages still say "Dash"; use DashSquad in new titles and copy.
+- **Mission Control** — the desktop app. Always capitalized.
+- **gateway** — the background service that runs agents. Lowercase in running text.
+- **agent** / **squad member** — an AI agent the user runs. The user's set of agents is their **squad**.
+- **sub-agent** — a helper an agent starts to take part of a job.
 
 ## Style preferences
-
-{/* Add any project-specific style rules below */}
 
 - Use active voice and second person ("you")
 - Keep sentences concise — one idea per sentence
@@ -29,5 +26,6 @@
 
 ## Content boundaries
 
-{/* Define what should and shouldn't be documented */}
-{/* Example: Don't document internal admin features */}
+- **User-facing only.** Document how to set up, configure, and use Dash.
+- Do not document developer-facing details: CI, internal tooling, contribution workflows, linter configs, or internal architecture that users never touch.
+- Never commit anything under `plans/` or `superpowers/` — those are Dash's private dev-plan directories and are gitignored here.

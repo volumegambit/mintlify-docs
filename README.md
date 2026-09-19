@@ -1,55 +1,37 @@
-# Mintlify Starter Kit
+# DashSquad docs
 
-Use the starter kit to get your docs deployed and ready to customize.
+Source for the DashSquad user documentation at **[docs.dashsquad.ai](https://docs.dashsquad.ai)**, built with [Mintlify](https://mintlify.com).
 
-Click the green **Use this template** button at the top of this repo to copy the Mintlify starter kit. The starter kit contains examples with
+This repo is mounted as the `docs/` submodule of [volumegambit/Dash](https://github.com/volumegambit/Dash). Page content lives here; the Dash repo only pins a commit of it.
 
-- Guide pages
-- Navigation
-- Customizations
-- API reference pages
-- Use of popular components
+## Structure
 
-**[Follow the full quickstart guide](https://starter.mintlify.com/quickstart)**
+- `docs.json` — site config: theme, colors, and the navigation tree. A page only appears on the site once it is listed here.
+- `*.mdx` — one file per page, with `title` and `description` frontmatter. The file name (without `.mdx`) is the page slug.
 
-## AI-assisted writing
-
-Set up your AI coding tool to work with Mintlify:
+## Preview locally
 
 ```bash
-npx skills add https://mintlify.com/docs
-```
-
-This command installs Mintlify's documentation skill for your configured AI tools like Claude Code, Cursor, Windsurf, and others. The skill includes component reference, writing standards, and workflow guidance.
-
-See the [AI tools guides](/ai-tools) for tool-specific setup.
-
-## Development
-
-Install the [Mintlify CLI](https://www.npmjs.com/package/mint) to preview your documentation changes locally. To install, use the following command:
-
-```
 npm i -g mint
-```
-
-Run the following command at the root of your documentation, where your `docs.json` is located:
-
-```
 mint dev
 ```
 
-View your local preview at `http://localhost:3000`.
+Run `mint dev` from the repo root (where `docs.json` is) and open `http://localhost:3000`. Run `mint broken-links` before pushing to catch dead internal links.
 
-## Publishing changes
+## Publishing
 
-Install our GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app) to propagate changes from your repo to your deployment. Changes are deployed to production automatically after pushing to the default branch.
+The Mintlify GitHub app deploys every push to `main` to docs.dashsquad.ai. There is no separate release step.
 
-## Need help?
+## Editing from the Dash repo
 
-### Troubleshooting
+```bash
+cd docs
+# edit pages, then:
+git add <files> && git commit -m "docs: ..." && git push
+cd ..
+git add docs && git commit -m "chore(docs): bump docs submodule"
+```
 
-- If your dev environment isn't running: Run `mint update` to ensure you have the most recent version of the CLI.
-- If a page loads as a 404: Make sure you are running in a folder with a valid `docs.json`.
+Push here first, then commit the new `docs` pointer in Dash. Dash's CI runs tests against the pinned commit, so a docs change that a feature depends on needs both commits.
 
-### Resources
-- [Mintlify documentation](https://mintlify.com/docs)
+`plans/` and `superpowers/` are Dash's private dev-plan directories. They sit inside this checkout when it is used as the submodule, and are ignored by both git and Mintlify.
