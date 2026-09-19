@@ -5,3 +5,7 @@
 # Draft content
 drafts/
 *.draft.mdx
+
+# Dash dev-only dirs that live inside this checkout when used as the Dash docs/ submodule
+plans/
+superpowers/

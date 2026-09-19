@@ -1,0 +1,4 @@
+# Dash dev-only dirs (docs/plans is its own repo; see Dash CLAUDE.md)
+plans/
+superpowers/
+.DS_Store
