@@ -28,6 +28,30 @@ The fastest way to talk to your squad. Open the **Chat** tab in Desktop and star
 
 The empty chat panel shows your recent conversations and deployed agents for quick access. Every conversation is automatically saved. Come back later and pick up where you left off.
 
+## Guide a response or queue a follow up
+
+On a current HQ, the message box stays editable while your agent works. Enter text, attach images
+if needed, and press **Send**. Choose how to deliver the message:
+
+- **Steer — Guide the response in progress.** The agent receives your guidance at its next safe
+  boundary. It appears in the conversation with a delivery status, becoming **Steered** when delivered.
+- **Follow Up — Send after this response finishes.** Save the next request in the shared queue.
+  You can queue several requests and edit or remove one before it starts.
+
+Closing the chooser keeps your draft and attachments. Sending clears only the draft the HQ has
+acknowledged; text you type afterward stays in the message box.
+
+Follow Ups run in order. **Stop** ends the current response and advances to the next Follow Up. If a
+response fails, the remaining queue shows **Follow Ups paused**. Review the failure, then choose
+**Resume Follow Ups**. While paused, you can keep drafting or edit and remove queued items.
+
+The HQ saves accepted Follow Ups across disconnections and restarts. Opening the same conversation
+on Desktop, web, iPhone, iPad, or Android shows the same queue. A Steer that misses the end of its
+response is marked **not delivered**; it never becomes an unrelated later request.
+
+These controls require Mobile API v2. Older HQs and Desktop's local chat keep their existing
+single-response composer. Authentication or connection errors do not enable a legacy fallback.
+
 ## Reading tool activity
 
 When your agent uses a tool, Desktop and the web client show a tool card. DashSquad for iOS groups
@@ -45,11 +69,11 @@ not crowd out the conversation. Tap the row to inspect the individual steps and 
 
 ## Composer keys
 
-The message box uses the same keys across Desktop, the web client, and iOS, with one deliberate difference on iOS:
+The message box supports these keys across Desktop, the web client, and iOS:
 
 | Key | Desktop & web | iOS |
 |-----|--------------------------|-----|
-| **Return** | Send | Insert a line break |
+| **Return** | Insert a line break by default; configurable in Settings | Insert a line break by default; configurable in Settings |
 | **Shift+Return** | Insert a line break | Insert a line break |
 | **Cmd+Return** | Send | Send |
 | **Shift+Tab** | Insert a line break | Insert a line break |

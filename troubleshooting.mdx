@@ -177,6 +177,36 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 </AccordionGroup>
 
+## Steer and Follow Up
+
+<AccordionGroup>
+  <Accordion title="Follow Ups paused">
+    A failed response pauses the remaining Follow Ups. Read the error, fix the cause if needed,
+    then choose **Resume Follow Ups**. You can edit or remove queued items before resuming.
+    Your draft stays editable while the queue is paused.
+  </Accordion>
+  <Accordion title="Steer was not delivered">
+    The response ended before your Steer reached a safe boundary. The conversation marks it
+    **not delivered**. It will not run later by itself. Review the guidance and send a new message
+    or Follow Up if you still need it.
+  </Accordion>
+  <Accordion title="A Follow Up changed on another device">
+    Refresh the queue before editing again. An item may have been edited, removed, or started
+    elsewhere. Dash keeps rejected draft text and images so you can review them against the
+    current state. Avoid repeatedly sending a replacement while a command is still pending.
+  </Accordion>
+  <Accordion title="The delivery chooser is missing">
+    These controls need a current HQ with Mobile API v2. Older HQs and Desktop local conversations
+    keep the single-response composer. Update the HQ, reconnect, and open its shared conversation.
+    If Dash reports an identity, sign-in, or certificate error, resolve that error first.
+  </Accordion>
+  <Accordion title="A connection dropped after I pressed Send">
+    Accepted Follow Ups are saved at the HQ. Reconnect and let the app check the shared queue
+    before sending another copy. Pending acknowledgements keep their original request identities.
+    On iOS, follow the existing **Needs Recovery** instructions if manual recovery is required.
+  </Accordion>
+</AccordionGroup>
+
 ## Secrets and credentials
 
 <AccordionGroup>
