@@ -134,13 +134,13 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="Message saved for recovery">
-    **Symptom:** Dash for iOS shows **Message saved for recovery**, and that chat's composer is
+    **Symptom:** DashSquad for iOS shows **Message saved for recovery**, and that chat's composer is
     unavailable.
 
     **Fix:** Open **Needs Recovery** from Conversations and copy the exact message text. Preview or
-    share any readable attachments before discarding the item. If Dash could not read the saved
+    share any readable attachments before discarding the item. If DashSquad could not read the saved
     attachment data, the text remains available but those attachments cannot be previewed or
-    shared. If a newer draft exists, Dash keeps that draft separate and places the earlier message
+    shared. If a newer draft exists, DashSquad keeps that draft separate and places the earlier message
     here so neither payload is overwritten. The chat remains read-only until you explicitly discard
     the recovery item. Do not clear the app's data or reinstall it before preserving anything you
     need.
@@ -196,8 +196,8 @@ Something not working? Here are the most common issues and how to fix them.
 ## Remote access (relay)
 
 <AccordionGroup>
-  <Accordion title="Dash for iOS can't reach your Dash account service">
-    **Symptom:** The HQ picker on Dash for iOS shows:
+  <Accordion title="DashSquad for iOS can't reach your Dash account service">
+    **Symptom:** The HQ picker on DashSquad for iOS shows:
 
     > Couldn't reach your Dash account service. Check your connection and try again.
 
@@ -207,8 +207,8 @@ Something not working? Here are the most common issues and how to fix them.
     account service is reachable from the internet.
   </Accordion>
 
-  <Accordion title="Dash for iOS shows no HQs linked to your account">
-    **Symptom:** The HQ picker on Dash for iOS shows:
+  <Accordion title="DashSquad for iOS shows no HQs linked to your account">
+    **Symptom:** The HQ picker on DashSquad for iOS shows:
 
     > No HQs linked to your account yet. Open Desktop → Settings → Devices → Remote access to enroll this machine.
 
@@ -218,7 +218,7 @@ Something not working? Here are the most common issues and how to fix them.
     or restarting. (Once the list has HQs in it, pull down on the list to refresh instead.)
   </Accordion>
 
-  <Accordion title="Dash for iOS says an HQ needs to be re-enrolled">
+  <Accordion title="DashSquad for iOS says an HQ needs to be re-enrolled">
     **Symptom:** Tapping an HQ in the picker shows:
 
     > This HQ needs to be re-enrolled from Desktop before app access works.
@@ -226,7 +226,7 @@ Something not working? Here are the most common issues and how to fix them.
     **Fix:** This HQ's Remote access setup on Desktop predates this app's account
     sign-in support, so it never registered the app's chat capability. Open Desktop on
     the machine that runs this HQ — it updates the HQ's app access automatically on
-    launch — then try the HQ again in Dash for iOS.
+    launch — then try the HQ again in DashSquad for iOS.
   </Accordion>
 
   <Accordion title="Desktop cannot create a local pairing code">
@@ -284,7 +284,7 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="QR code still pairs over the local network">
-    **Symptom:** The **Pair Device** section on **Settings → Devices** — used by the Dash Android
+    **Symptom:** The **Pair Device** section on **Settings → Devices** — used by the DashSquad Android
     app — says it connects over your **local network** even though you want remote access.
 
     **Fix:** The QR code only switches to remote access after you've created an HQ. On **Settings → Devices**, confirm the **Remote access** section shows **HQ ready at** with an address, then check the **Pair Device** section above it — the code now carries your relay address.
@@ -313,22 +313,22 @@ Something not working? Here are the most common issues and how to fix them.
 
   <Accordion title="Approving a new browser session times out or is declined">
     **Symptom:** Signing in on a new browser shows **Approve this device** with
-    "Waiting for approval — scan this code with the Dash app on your phone." and a QR
+    "Waiting for approval — scan this code with the DashSquad app on your phone." and a QR
     code, then instead of continuing to chat it settles on one of:
 
     > Approval declined. You can try again from the HQ list.
 
     > The code expired. Try again from the HQ list.
 
-    **Fix:** This screen only appears on accounts that already have a Dash for iOS
+    **Fix:** This screen only appears on accounts that already have a DashSquad for iOS
     device signed in — new browser sessions need one of those devices to approve them.
     **Approval declined** means someone tapped **Deny** on the phone; **The code
     expired** means nobody approved it within the time limit. Either way, go back to
-    the HQ list and sign in again to get a fresh code, then open Dash on the
+    the HQ list and sign in again to get a fresh code, then open DashSquad on the
     phone, go to **Settings → Approve a device**, and scan it before it expires.
   </Accordion>
 
-  <Accordion title="Dash for iOS says a browser's code has expired">
+  <Accordion title="DashSquad for iOS says a browser's code has expired">
     **Symptom:** Scanning a browser's approval code from **Settings → Approve a
     device** shows:
 

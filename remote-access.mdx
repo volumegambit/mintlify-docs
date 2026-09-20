@@ -3,11 +3,11 @@ title: "Remote Access"
 description: "Reach your agents from your phone over the internet, from anywhere."
 ---
 
-Dash for Android connects to your HQ over your local Wi-Fi by default, and can also pair
+DashSquad for Android connects to your HQ over your local Wi-Fi by default, and can also pair
 through the **hosted relay** to reach the same agents from anywhere — on cellular, at the office,
 travelling — without opening any ports on your home network.
 
-Dash for iOS always connects through the hosted relay: sign in with your Dash account and pick
+DashSquad for iOS always connects through the hosted relay: sign in with your Dash account and pick
 your HQ from the list — no local network or QR code involved.
 
 <Note>
@@ -26,7 +26,7 @@ and a revocable device credential instead.
 <CardGroup cols={2}>
   <Card title="Use the relay" icon="globe">
     You want to chat with your agents from your phone while away from home, where
-    your phone and the HQ are on different networks. Dash for iOS always uses this path.
+    your phone and the HQ are on different networks. DashSquad for iOS always uses this path.
   </Card>
   <Card title="Skip the relay" icon="wifi">
     Your Android phone and the machine running Dash are on the same Wi-Fi. Just pair over
@@ -80,16 +80,16 @@ HQ machine.
   <Step title="Connect your phone or tablet">
     **Android:** open **Settings → Devices**. With an HQ created, the QR code in the
     **Pair Device** section now carries your relay address and a per-device credential.
-    Scan it with the Dash Android app — it connects through the relay from then on,
+    Scan it with the DashSquad Android app — it connects through the relay from then on,
     wherever you are.
 
-    **iOS:** open Dash on your iPhone or iPad and tap **Sign In**. Sign in with the same
-    Dash account, then tap your HQ in the list — see [Dash for iPhone and
+    **iOS:** open DashSquad on your iPhone or iPad and tap **Sign In**. Sign in with the same
+    Dash account, then tap your HQ in the list — see [DashSquad for iPhone and
     iPad](/ios#sign-in) for the full flow. There's no QR code to scan.
   </Step>
 </Steps>
 
-Dash for iOS and Desktop share the HQ-authoritative conversation history, including
+DashSquad for iOS and Desktop share the HQ-authoritative conversation history, including
 running turns, replay, renames, and deletions. Android remains a legacy, non-resumable client in
 this release: its chat sessions stay private to that app until the separate Android conversation
 sync migration. Both apps get a phone-scoped capability and a revocable device credential, whether
