@@ -3,7 +3,39 @@
   "theme": "maple",
   "name": "DashSquad",
   "colors": {
-    "primary": "#3A8B6B"
+    "primary": "#2563EB",
+    "light": "#60A5FA",
+    "dark": "#1D4ED8"
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg",
+    "href": "https://dashsquad.ai"
+  },
+  "favicon": "/favicon.svg",
+  "appearance": {
+    "default": "dark"
+  },
+  "background": {
+    "color": {
+      "light": "#FFFFFF",
+      "dark": "#0A0A0A"
+    }
+  },
+  "fonts": {
+    "heading": { "family": "Outfit", "weight": 700 },
+    "body": { "family": "Outfit", "weight": 400 }
+  },
+  "styling": {
+    "codeblocks": "dark"
+  },
+  "navbar": {
+    "links": [{ "label": "dashsquad.ai", "href": "https://dashsquad.ai" }],
+    "primary": {
+      "type": "button",
+      "label": "Download",
+      "href": "https://github.com/volumegambit/Dash/releases/latest"
+    }
   },
   "navigation": {
     "tabs": [
@@ -53,7 +85,10 @@
       }
     ]
   },
-  "footerSocials": {
-    "github": "https://github.com/volumegambit/Dash"
+  "footer": {
+    "socials": {
+      "github": "https://github.com/volumegambit/Dash",
+      "website": "https://dashsquad.ai"
+    }
   }
 }
