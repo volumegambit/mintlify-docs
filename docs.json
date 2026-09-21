@@ -10,7 +10,7 @@
   "logo": {
     "light": "/logo/light.svg",
     "dark": "/logo/dark.svg",
-    "href": "https://dashsquad.ai"
+    "href": "https://www.dashsquad.ai"
   },
   "favicon": "/favicon.svg",
   "appearance": {
@@ -30,7 +30,7 @@
     "codeblocks": "dark"
   },
   "navbar": {
-    "links": [{ "label": "dashsquad.ai", "href": "https://dashsquad.ai" }],
+    "links": [{ "label": "dashsquad.ai", "href": "https://www.dashsquad.ai" }],
     "primary": {
       "type": "button",
       "label": "Download",
@@ -88,7 +88,7 @@
   "footer": {
     "socials": {
       "github": "https://github.com/volumegambit/Dash",
-      "website": "https://dashsquad.ai"
+      "website": "https://www.dashsquad.ai"
     }
   }
 }
