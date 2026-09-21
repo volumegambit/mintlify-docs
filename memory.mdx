@@ -19,7 +19,7 @@ Each memory is a single fact with a type:
 The agent decides on its own what's worth remembering — it does not save everything you say. It is told not to save secrets, credentials, or anything that only matters for the conversation at hand.
 
 <Warning>
-That is an instruction the agent is given, not a filter Dash enforces. Nothing checks what goes into a memory file, so a model that ignores the instruction can write a credential to disk. Treat memory as part of the conversation: don't paste passwords, API keys, or tokens into chat.
+That is an instruction the agent is given, not a filter DashSquad enforces. Nothing checks what goes into a memory file, so a model that ignores the instruction can write a credential to disk. Treat memory as part of the conversation: don't paste passwords, API keys, or tokens into chat.
 </Warning>
 
 ## Where it lives
@@ -46,7 +46,7 @@ The memory index is loaded into the agent's context on every turn, so the agent 
 
 Most models save, update, and delete their own memories as the conversation happens — no extra setup needed. When it learns something worth keeping, it saves a new memory or updates an existing one with the same name rather than creating a duplicate; if a memory turns out to be wrong, it deletes it. Chat shows a small chip whenever the agent saves or deletes a memory, so you can see it happening.
 
-Some models are less reliable about doing this on their own. For those, Dash can run a lightweight review after each turn that looks at what was just said and saves anything worth keeping. This **post-turn sweep** has three settings, available on the agent's Memory tab in Desktop:
+Some models are less reliable about doing this on their own. For those, DashSquad can run a lightweight review after each turn that looks at what was just said and saves anything worth keeping. This **post-turn sweep** has three settings, available on the agent's Memory tab in Desktop:
 
 - **Auto** (default) — the sweep runs for every model except Anthropic, OpenAI, and Google models, which reliably save memories themselves.
 - **On** — the sweep always runs, regardless of model.

@@ -1,11 +1,11 @@
 ---
 title: "Configuration"
-description: "How Dash agents, data, and credentials are configured — all through Desktop, with a standalone HQ option."
+description: "How DashSquad agents, data, and credentials are configured — all through Desktop, with a standalone HQ option."
 ---
 
-Dash is configured through **Desktop**. There are no config files to hand-edit — you deploy agents, connect providers, and set up messaging apps from the desktop app, and Desktop saves everything for you.
+DashSquad is configured through **Desktop**. There are no config files to hand-edit — you deploy agents, connect providers, and set up messaging apps from the desktop app, and Desktop saves everything for you.
 
-This page explains what you can configure, where Dash stores its data, and the few environment variables and CLI flags available when you run the HQ on its own.
+This page explains what you can configure, where DashSquad stores its data, and the few environment variables and CLI flags available when you run the HQ on its own.
 
 ## Squad member settings
 
@@ -90,7 +90,7 @@ isolation: worktree
 You are a senior reviewer...
 ```
 
-`name` and `description` are required; `name` must match `^[a-z0-9][a-z0-9-]*$` — lowercase letters, digits and hyphens only. `tools` is a comma-separated list of Dash tool names, MCP patterns (`mcp__<server>`, `mcp__<server>__<tool>`, `mcp__*`), or `agent(<type>, …)` to limit which types this agent may launch in turn; omit it to inherit the parent's grant **after** the skill-management, connector-management and Projects tools, and the four legacy swarm tools, have been dropped — those are parent-only however the agent is configured, so "everything the parent has" never includes them. `disallowedTools` is subtracted first. `model` takes a `provider/model` id or `inherit`. `skills` names skills to preload into the prompt. `maxTurns` stops the agent once it has made more than that many tool calls and reports what it has so far (it can be resumed) — the call that trips the limit still runs to completion, so the agent stops after `maxTurns + 1` calls rather than before. `background: true` **forces** this type to detach: a caller passing `run_in_background: false` cannot bring it back into the foreground, though a caller can always add background to a type that does not set it. `isolation: worktree` gives the agent its own git checkout of the workspace, cut from the workspace's current commit. Claude Code keys Dash does not act on — `permissionMode`, `hooks`, `mcpServers`, `memory`, `effort`, `color`, `experimental` — are **silently ignored**: nothing is written to the HQ log, so a setting that appears to do nothing is one of these rather than a file that failed to load.
+`name` and `description` are required; `name` must match `^[a-z0-9][a-z0-9-]*$` — lowercase letters, digits and hyphens only. `tools` is a comma-separated list of DashSquad tool names, MCP patterns (`mcp__<server>`, `mcp__<server>__<tool>`, `mcp__*`), or `agent(<type>, …)` to limit which types this agent may launch in turn; omit it to inherit the parent's grant **after** the skill-management, connector-management and Projects tools, and the four legacy swarm tools, have been dropped — those are parent-only however the agent is configured, so "everything the parent has" never includes them. `disallowedTools` is subtracted first. `model` takes a `provider/model` id or `inherit`. `skills` names skills to preload into the prompt. `maxTurns` stops the agent once it has made more than that many tool calls and reports what it has so far (it can be resumed) — the call that trips the limit still runs to completion, so the agent stops after `maxTurns + 1` calls rather than before. `background: true` **forces** this type to detach: a caller passing `run_in_background: false` cannot bring it back into the foreground, though a caller can always add background to a type that does not set it. `isolation: worktree` gives the agent its own git checkout of the workspace, cut from the workspace's current commit. Claude Code keys DashSquad does not act on — `permissionMode`, `hooks`, `mcpServers`, `memory`, `effort`, `color`, `experimental` — are **silently ignored**: nothing is written to the HQ log, so a setting that appears to do nothing is one of these rather than a file that failed to load.
 
 Definitions are read from four places. Where the same name appears twice, the **first** match here wins:
 
@@ -111,7 +111,7 @@ The HQ reads these files once and caches them per agent. A file you add or edit 
 
 ## Data directory
 
-Everything Dash stores on disk lives under a single root — `~/.dash` by default — organized into clearly named subfolders:
+Everything DashSquad stores on disk lives under a single root — `~/.dash` by default — organized into clearly named subfolders:
 
 ```
 ~/.dash/
@@ -121,7 +121,7 @@ Everything Dash stores on disk lives under a single root — `~/.dash` by defaul
 └── workspaces/   # one folder per agent (where its files live)
 ```
 
-This is the same location whether you launch Dash through Desktop or run the HQ on its own, so your agents, credentials, and conversations are always in one predictable place. You can open any of these folders in Finder or your editor.
+This is the same location whether you launch DashSquad through Desktop or run the HQ on its own, so your agents, credentials, and conversations are always in one predictable place. You can open any of these folders in Finder or your editor.
 
 Two of these subfolders are **data directories** in their own right — each is the root a single component reads and writes:
 
@@ -133,16 +133,16 @@ Where this page writes `<dataDir>` as a placeholder — for example throughout [
 To store everything somewhere else (for example, a separate disk or multiple profiles), set `DASH_HOME` to a directory of your choosing. Running the HQ with `--data-dir <path>` overrides just the HQ's own folder; `MC_DATA_DIR` overrides just Desktop's.
 
 <Note>
-  Upgrading from an older version? The first time Dash starts, it automatically moves your existing data into `~/.dash` — no action needed. See [Troubleshooting](/troubleshooting#my-data-moved-after-updating) if anything looks missing.
+  Upgrading from an older version? The first time DashSquad starts, it automatically moves your existing data into `~/.dash` — no action needed. See [Troubleshooting](/troubleshooting#my-data-moved-after-updating) if anything looks missing.
 </Note>
 
 ## Environment variables
 
-Dash needs no environment variables for normal Desktop use. These are available for advanced and standalone scenarios:
+DashSquad needs no environment variables for normal Desktop use. These are available for advanced and standalone scenarios:
 
 | Variable | Description |
 |----------|-------------|
-| `DASH_HOME` | Root directory for everything Dash stores on disk (default: `~/.dash`). |
+| `DASH_HOME` | Root directory for everything DashSquad stores on disk (default: `~/.dash`). |
 | `MC_DATA_DIR` | Override just the Desktop app's data folder (used by tests and QA). |
 | `POOL_MAX_SIZE` | Maximum number of agent runtimes kept in memory by the HQ (default: `200`). |
 | `SUBAGENTS_MAX_CONCURRENT_GLOBAL` | Ceiling on sub-agents running at once across **all** agents (default: `16`). Was `SWARM_MAX_CONCURRENT_WORKERS_GLOBAL`, still read. |
@@ -192,7 +192,7 @@ credential if your relay requires one. Click **Test connection** first. Desktop 
 URLs are saved in Desktop's settings. Tokens and relay credentials stay
 in the OS keychain.
 
-**Self-host on a VPS** is the advanced path. It connects over SSH, installs Dash
+**Self-host on a VPS** is the advanced path. It connects over SSH, installs DashSquad
 on the server, creates a `dash-gateway` systemd user service, starts the HQ
 with your relay settings, tests the deployed HQ, and then saves the resulting
 relay endpoint in Desktop. You need a VPS that already has Node.js, npm,
@@ -225,7 +225,7 @@ reserved for a future release.
 
 ### Voice mode
 
-Hands-free voice mode (see [Dash for iPhone and iPad](/ios#voice-mode)) speaks each sentence as
+Hands-free voice mode (see [DashSquad for iPhone and iPad](/ios#voice-mode)) speaks each sentence as
 soon as it's ready, either as a continuous PCM stream or as one MP3 clip per sentence, depending on
 the text-to-speech model. `hexgrad/kokoro-82m`, `microsoft/mai-voice-2-flash`, and
 `microsoft/mai-voice-2` stream PCM at a fixed sample rate, and Google's Gemini TTS streams PCM
@@ -239,7 +239,7 @@ per sentence.
 
 ## Plugins
 
-Plugins let you drop extra skills into any Dash agent without touching the config file. The HQ discovers plugins from the `plugins/` directory inside the **HQ's data directory** — that is, `~/.dash/gateway/plugins/`. Throughout this section, `<dataDir>` is shorthand for that HQ data directory (`~/.dash/gateway`), not Desktop's `~/.dash/desktop`.
+Plugins let you drop extra skills into any DashSquad agent without touching the config file. The HQ discovers plugins from the `plugins/` directory inside the **HQ's data directory** — that is, `~/.dash/gateway/plugins/`. Throughout this section, `<dataDir>` is shorthand for that HQ data directory (`~/.dash/gateway`), not Desktop's `~/.dash/desktop`.
 
 <Note>
 For a step-by-step guide to discovering, enabling, trusting, and using plugins, see [Plugins](/plugins). This section is the detailed reference: directory layout, the `config.json` schema, hook events, and the provider catalog schema.

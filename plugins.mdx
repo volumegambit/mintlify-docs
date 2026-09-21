@@ -5,7 +5,7 @@ description: "Bundle skills, commands, agents, and integrations — install them
 
 A plugin is a self-contained bundle of agent capabilities. Where a [skill](/skills) is a single set of instructions, a plugin packages many things together — skills, slash commands, subagents, MCP servers, hooks, LLM providers, and helper executables — so you can install a whole capability set from one place and turn it on for your agents.
 
-Dash plugins follow the **Claude Code plugin layout**, so a plugin published for Claude Code works in Dash unchanged.
+DashSquad plugins follow the **Claude Code plugin layout**, so a plugin published for Claude Code works in DashSquad unchanged.
 
 ## Quick start
 
@@ -134,7 +134,7 @@ The **Trust Plugin** button is disabled until the plugin is **enabled** — you 
 
 ## Security model
 
-Installing a plugin brings someone else's instructions — and potentially their code — onto your HQ. Dash treats every install as **untrusted by default** and layers several defenses:
+Installing a plugin brings someone else's instructions — and potentially their code — onto your HQ. DashSquad treats every install as **untrusted by default** and layers several defenses:
 
 1. **Untrusted on arrival.** A freshly installed plugin is `enabled` but **not** `trusted`. Its markdown components (skills, commands, subagents) load, but its **code components stay inert** — MCP servers, hooks, `bin/` executables, and provider catalogs do nothing until you trust the plugin. Nothing a plugin ships can execute on your HQ from the install alone.
 
@@ -234,7 +234,7 @@ This is useful when an agent must only ever talk to a specific vendor — for ex
 
 ## Marketplaces
 
-A **marketplace** is a published catalog of plugins you can browse and install by name. You point Dash at a marketplace source — a local path, a URL, or a git repo — and Dash reads its `marketplace.json` to list the plugins it offers.
+A **marketplace** is a published catalog of plugins you can browse and install by name. You point DashSquad at a marketplace source — a local path, a URL, or a git repo — and DashSquad reads its `marketplace.json` to list the plugins it offers.
 
 A `marketplace.json` looks like this:
 
@@ -268,7 +268,7 @@ A `marketplace.json` looks like this:
 | `plugins[].source` | Yes | A plugin source string (git / URL / local) |
 | `plugins[].description` | No | What the plugin does |
 
-Each entry's `source` is just an ordinary install source. When you install a marketplace plugin, Dash resolves the name to its source and runs the **same untrusted, scanned install path** as a direct install — a marketplace listing is never a shortcut to trust. Installing from a marketplace is exactly as safe as installing the source by hand.
+Each entry's `source` is just an ordinary install source. When you install a marketplace plugin, DashSquad resolves the name to its source and runs the **same untrusted, scanned install path** as a direct install — a marketplace listing is never a shortcut to trust. Installing from a marketplace is exactly as safe as installing the source by hand.
 
 ## Config flags
 

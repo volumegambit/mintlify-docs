@@ -1,9 +1,9 @@
 ---
 title: "Architecture"
-description: "How Dash is structured, how data flows, and how agents process messages."
+description: "How DashSquad is structured, how data flows, and how agents process messages."
 ---
 
-Dash is made up of two main pieces that work together to keep your agent team running.
+DashSquad is made up of two main pieces that work together to keep your agent team running.
 
 ## System overview
 
@@ -26,14 +26,14 @@ graph TB
   gateway -- "Read/write provider keys" --> enc
 ```
 
-Dash has two main components:
+DashSquad has two main components:
 
 - **HQ** — Single long-running process that hosts all agents in memory, serves a WebSocket channel server at port 9200, exposes an HTTP management API at port 9300, and connects to external messaging platforms. Desktop spawns it automatically on first launch and reuses it across Desktop restarts — the bearer token lives in the OS keychain, so a relaunched Desktop recognizes its own HQ without a fresh spawn.
 - **Desktop** — Electron desktop app. Main process hosts the supervisor that manages the HQ lifecycle, renderer is a React + Vite UI talking to the main process over IPC.
 
 ### Deployment options
 
-Dash is flexible about where each piece runs.
+DashSquad is flexible about where each piece runs.
 
 **Single machine** — run everything locally. Launch Desktop, which spawns the HQ as a child process. Good for development and personal use.
 
@@ -64,7 +64,7 @@ Dash is flexible about where each piece runs.
 
 ## Conversation history across devices
 
-Dash for iOS and capability-aware Desktop share one view. They render the same
+DashSquad for iOS and capability-aware Desktop share one view. They render the same
 HQ-authoritative conversation history. Android remains a legacy, non-resumable client in
 this release, so its private chat sessions are not part of that shared history, and the
 [sub-agent](#sub-agents) interface — rows, transcripts, and the tasks list — is on iOS, the web
@@ -106,11 +106,11 @@ When you use the [hosted relay](/remote-access) to reach your agents from your p
 the HQ authenticates itself with its **own cryptographic identity** rather than a
 shared password. On first start, the HQ generates an Ed25519 key pair and stores
 the private half on its own disk (owner-readable only); the private key never leaves the
-machine. Only the matching **public** key is ever registered with Dash, so the hosted
+machine. Only the matching **public** key is ever registered with DashSquad, so the hosted
 service holds nothing that could impersonate your HQ.
 
 HQs are owned by an **organization**, not by an individual login. When you set up
-remote access you sign in to Dash and act on behalf of an organization; the HQs and
+remote access you sign in to DashSquad and act on behalf of an organization; the HQs and
 addresses you create belong to it, which is what lets you share access with teammates. The
 hosted service only ever sees the organization a request belongs to — never a password.
 
@@ -121,7 +121,7 @@ phone always resolves the same HQ and a name can't be taken over by someone else
 
 Each time the HQ dials out to the relay, it presents its relay address token
 together with a short-lived proof signed by that private key. The relay checks, offline,
-that the token was issued by Dash for that exact address **and** that the dialer actually
+that the token was issued by DashSquad for that exact address **and** that the dialer actually
 holds the matching private key (holder-of-key) before it admits the connection. A token
 copied from disk or seen on the wire is therefore inert on its own — without the private
 key it produces no valid proof.
@@ -166,7 +166,7 @@ Here's what happens when a capable client sends a resumable message to one of yo
   </Step>
 </Steps>
 
-Desktop and the Dash phone app see the same active turn when they use the same capable
+Desktop and the DashSquad phone app see the same active turn when they use the same capable
 HQ. Either client can watch replayed output, answer a pending question, or explicitly cancel
 the turn. Closing one client does not cancel shared work.
 
@@ -223,7 +223,7 @@ Cross-device conversation state is canonical in the HQ's SQLite database:
 ```
 
 That database owns conversation summaries and revisions, user and assistant messages, deletion
-tombstones, the active-turn lease, and the ordered replay journal. Dash mobile and capability-aware
+tombstones, the active-turn lease, and the ordered replay journal. DashSquad mobile and capability-aware
 Desktop clients cache this state and reconcile from the Management API rather than treating
 local chat history as authoritative. When the HQ does not advertise the required capabilities,
 Desktop falls back to legacy connection-owned chat.

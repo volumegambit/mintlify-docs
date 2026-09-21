@@ -7,7 +7,7 @@ Each agent in your team can use a different AI provider and model. Mix and match
 
 ## Provider routing
 
-Model names use a `provider/model` format. The prefix before the slash tells Dash which provider to use:
+Model names use a `provider/model` format. The prefix before the slash tells DashSquad which provider to use:
 
 | Prefix | Provider |
 |--------|----------|
@@ -90,7 +90,7 @@ Sign up at [platform.moonshot.ai](https://platform.moonshot.ai) to get an API ke
 - `moonshotai/kimi-k2.7-code` — coding-focused
 
 <Note>
-  Use the `moonshotai/` prefix (not `kimi/` or `moonshot/`) — it routes to Moonshot's global endpoint (`api.moonshot.ai`). Dash currently surfaces the Kimi K2 family.
+  Use the `moonshotai/` prefix (not `kimi/` or `moonshot/`) — it routes to Moonshot's global endpoint (`api.moonshot.ai`). DashSquad currently surfaces the Kimi K2 family.
 </Note>
 
 **Configuration:**
@@ -101,7 +101,7 @@ MOONSHOT_API_KEY=sk-...
 
 ## OpenRouter
 
-[OpenRouter](https://openrouter.ai) is a single OpenAI-compatible gateway that fronts many upstream providers. With one OpenRouter key you can reach models Dash doesn't connect to directly — DeepSeek, Llama, Qwen, Grok, GLM, and more — and OpenRouter automatically fails over to a healthy upstream provider if one is down. Sign up at [openrouter.ai](https://openrouter.ai) and create a key on the [Keys page](https://openrouter.ai/settings/keys).
+[OpenRouter](https://openrouter.ai) is a single OpenAI-compatible gateway that fronts many upstream providers. With one OpenRouter key you can reach models DashSquad doesn't connect to directly — DeepSeek, Llama, Qwen, Grok, GLM, and more — and OpenRouter automatically fails over to a healthy upstream provider if one is down. Sign up at [openrouter.ai](https://openrouter.ai) and create a key on the [Keys page](https://openrouter.ai/settings/keys).
 
 **Example models:**
 - `openrouter/deepseek/deepseek-r1` — DeepSeek R1 reasoning
@@ -121,7 +121,7 @@ OPENROUTER_API_KEY=sk-or-v1-...
 
 ## Using a provider in an agent
 
-When you deploy or edit an agent in Desktop, pick its model from the dropdown — it lists models for every provider you've connected, in `provider/model` format. Each agent can use a different provider, and the prefix tells Dash which API to call:
+When you deploy or edit an agent in Desktop, pick its model from the dropdown — it lists models for every provider you've connected, in `provider/model` format. Each agent can use a different provider, and the prefix tells DashSquad which API to call:
 
 - `anthropic/claude-sonnet-4-20250514`
 - `openai/gpt-4o`

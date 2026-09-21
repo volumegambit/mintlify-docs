@@ -10,7 +10,8 @@
 
 ## Terminology
 
-- **DashSquad** — the product name on this site (`name` in `docs.json`). Some pages still say "Dash"; use DashSquad in new titles and copy.
+- **DashSquad** — the product name (`name` in `docs.json`). Never write a bare "Dash" in prose. Two exceptions: code, paths and the `volumegambit/Dash` repo keep their real names, and text the apps show on screen is quoted verbatim even where it still says "Dash" (**Sign in to Dash**, "Update Dash", "Couldn't reach your Dash account service…", "…scan this code with the Dash app on your phone.").
+- The website is https://www.dashsquad.ai — the bare `dashsquad.ai` apex does not resolve, so always link with `www`.
 - **Desktop** — the desktop app (formerly Mission Control). Capitalized when it names the app.
 - **HQ** — the background process that runs squad members (formerly the gateway). Always uppercase.
 - **agent** / **squad member** — an AI agent the user runs. The user's set of agents is their **squad**.

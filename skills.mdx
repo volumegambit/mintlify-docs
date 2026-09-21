@@ -5,7 +5,7 @@ description: "Reusable instructions that agents discover and load on demand."
 
 Skills are reusable instructions that persist across conversations. An agent can load a skill when it recognizes a matching task, giving it step-by-step guidance without you repeating yourself every time.
 
-Dash ships with a **bundled library** of ready-made skills (research, drafting, summarizing, code review, and more), and agents can **install more** from the public skill ecosystem — by chat or from Desktop. Users can also list and run skills directly from a chat channel with slash commands.
+DashSquad ships with a **bundled library** of ready-made skills (research, drafting, summarizing, code review, and more), and agents can **install more** from the public skill ecosystem — by chat or from Desktop. Users can also list and run skills directly from a chat channel with slash commands.
 
 ## How skills work
 
@@ -97,7 +97,7 @@ From the agent's **Skills** tab in Desktop, you can add extra directories to sca
 
 ### Bundled library
 
-Dash ships a curated library of ready-made skills covering assistant, dev, creative, and communication tasks. These are available to every agent by default and are read-only. To stop using one, install a same-named skill to shadow it — or turn the whole bundled library off from the agent's **Skills** tab.
+DashSquad ships a curated library of ready-made skills covering assistant, dev, creative, and communication tasks. These are available to every agent by default and are read-only. To stop using one, install a same-named skill to shadow it — or turn the whole bundled library off from the agent's **Skills** tab.
 
 ## Squad member skill creation
 
@@ -117,7 +117,7 @@ The `create_skill` tool lets the agent write persistent instructions that affect
 
 ## Learning from experience
 
-Squad members also pick up skills on their own. After a turn where the squad member did real work, Dash runs a short review that asks the squad member's own model one question: did this session teach anything worth keeping? Anything it finds is written into a skill the squad member owns, so the next conversation starts already knowing it.
+Squad members also pick up skills on their own. After a turn where the squad member did real work, DashSquad runs a short review that asks the squad member's own model one question: did this session teach anything worth keeping? Anything it finds is written into a skill the squad member owns, so the next conversation starts already knowing it.
 
 You don't have to do anything to switch this on — it is on by default.
 
@@ -132,7 +132,7 @@ The review is told not to record a few things that look like lessons but age bad
 - **Errors that went away on their own.** If retrying worked, the lesson is to retry.
 - **One-off jobs.** Summarising a single document isn't a kind of work worth a skill.
 
-Nothing sensitive should ever be recorded. As with memory, that is an instruction the agent is given, not a filter Dash enforces — so don't paste passwords or keys into chat.
+Nothing sensitive should ever be recorded. As with memory, that is an instruction the agent is given, not a filter DashSquad enforces — so don't paste passwords or keys into chat.
 
 ### Seeing it happen
 
@@ -150,7 +150,7 @@ Learning only ever writes to skills the agent created itself. A skill you wrote,
 
 Each lesson carries a count of how often the review judged it right and how often it judged it wrong. A lesson that keeps proving wrong and never proves useful retires itself, and retired lessons are kept in the file rather than deleted, so you can see what happened and put one back by hand.
 
-To correct something immediately, open the skill in Desktop and **Retire** the lesson. Retiring keeps it in the file and stops the agent proposing it again. To stop Dash managing a learned skill altogether, delete its `lessons.json` — the skill stays as an ordinary one that learning no longer touches.
+To correct something immediately, open the skill in Desktop and **Retire** the lesson. Retiring keeps it in the file and stops the agent proposing it again. To stop DashSquad managing a learned skill altogether, delete its `lessons.json` — the skill stays as an ordinary one that learning no longer touches.
 
 ### Settings
 
