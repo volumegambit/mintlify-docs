@@ -344,10 +344,30 @@ Read the ticket below and assign a priority (P1–P4) with a one-line reason.
   "baseUrl": "https://api.myprov.example/v1",
   "api": "openai-completions",
   "models": [
-    { "id": "my-fast", "name": "My Fast", "contextWindow": 128000, "maxTokens": 8192 }
+    { "id": "my-fast", "name": "My Fast", "contextWindow": 128000, "maxTokens": 8192 },
+    {
+      "id": "my-reasoning",
+      "name": "My Reasoning",
+      "api": "openai-responses",
+      "contextWindow": 128000,
+      "maxTokens": 16384,
+      "reasoning": true,
+      "thinkingLevelMap": { "off": null, "minimal": null, "xhigh": "max" }
+    }
   ]
 }
 ```
+
+Each model can optionally set `api` to override the provider's API format. In this example, `my-fast` uses Chat Completions and `my-reasoning` uses Responses. Choose the format your provider supports for that model.
+
+For models with reasoning, set `reasoning: true` and describe any restrictions in `thinkingLevelMap`:
+
+- `reasoning: true` declares a capability. It does not, by itself, make reasoning mandatory.
+- `"off": null` marks reasoning as required. HQ automatically selects the lowest available thinking level.
+- `null` removes a level from the supported set. The example also excludes `minimal`, so its lowest level is `low`.
+- A string maps a DashSquad level to the provider's native value. The example maps `xhigh` to `max`.
+
+Use the keys `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Omitted keys use the provider adapter's defaults; `xhigh` needs an explicit mapping to become available. Check the provider's API documentation for accepted values. See [Extended thinking](/extended-thinking) for HQ's default behavior.
 
 **`hooks/hooks.json`** *(optional — also trust-gated)*. Claude Code hooks format; `${CLAUDE_PLUGIN_ROOT}` resolves to the plugin's own directory.
 
