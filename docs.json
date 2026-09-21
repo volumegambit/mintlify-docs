@@ -44,7 +44,7 @@
         "groups": [
           {
             "group": "Getting Started",
-            "pages": ["introduction", "how-dash-works", "getting-started"]
+            "pages": ["introduction", "how-dashsquad-works", "getting-started"]
           },
           {
             "group": "Core Concepts",
@@ -85,6 +85,9 @@
       }
     ]
   },
+  "redirects": [
+    { "source": "/how-dash-works", "destination": "/how-dashsquad-works", "permanent": true }
+  ],
   "footer": {
     "socials": {
       "github": "https://github.com/volumegambit/Dash",
