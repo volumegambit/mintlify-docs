@@ -48,7 +48,7 @@ Most models save, update, and delete their own memories as the conversation happ
 
 Some models are less reliable about doing this on their own. For those, DashSquad can run a lightweight review after each turn that looks at what was just said and saves anything worth keeping. This **post-turn sweep** has three settings, available on the agent's Memory tab in Desktop:
 
-- **Auto** (default) — the sweep runs for every model except Anthropic, OpenAI, and Google models, which reliably save memories themselves.
+- **Auto** (default) — the sweep runs for every model except Anthropic, OpenAI, and Google models, which reliably save memories themselves. This looks through routers: an Anthropic model reached via OpenRouter counts as an Anthropic model and is not swept.
 - **On** — the sweep always runs, regardless of model.
 - **Off** — the sweep never runs; only the agent's own saves apply.
 
