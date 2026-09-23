@@ -428,7 +428,7 @@ Something not working? Here are the most common issues and how to fix them.
     No browser available. Open DashSquad Desktop → Settings → Browser to install one.
     ```
 
-    **Fix:** The HQ found neither Chrome nor Edge on its machine, and no managed browser is installed. Install Google Chrome or Microsoft Edge, or open **Settings → Browser** in Desktop and click **Download browser** (about 190 MB). Then click **Check again**. If your browser is somewhere unusual, point `BROWSER_EXECUTABLE_PATH` at it. See [Browser → Get a browser](/browser#get-a-browser).
+    **Fix:** The HQ found neither Chrome nor Edge on its machine, and no managed browser is installed. Install Google Chrome or Microsoft Edge and click **Check again** on **Settings → Browser** in Desktop, or click **Download browser** there (about 190 MB) — once the download finishes, agents use it without another click. If your browser is somewhere unusual, point `BROWSER_EXECUTABLE_PATH` at it. See [Browser → Get a browser](/browser#get-a-browser).
   </Accordion>
 
   <Accordion title="A browser was found but did not start in time">
@@ -457,13 +457,13 @@ Something not working? Here are the most common issues and how to fix them.
     **Fix:** A saved profile can be open in only one conversation at a time. Ask the agent in the named conversation to close its browser, or wait — a browser closes on its own after 15 minutes of inactivity. The same message appears if you try to delete a profile that's in use. See [Browser → Profiles](/browser#profiles).
   </Accordion>
 
-  <Accordion title="The HQ is already running 3 browser sessions">
+  <Accordion title="The HQ is already running its maximum number of browser sessions">
     **Error:**
     ```
-    this HQ is already running 3 browser sessions
+    this HQ is already running <n> browser sessions
     ```
 
-    **Fix:** The HQ caps how many browsers are open at once, across every agent. Ask an agent to close a browser it no longer needs, wait for an idle one to close, or raise the cap with `BROWSER_MAX_SESSIONS` (up to `10`). See [Browser → Limits](/browser#limits).
+    **Fix:** The HQ caps how many browsers are open at once, across every agent — `<n>` is that cap (3 unless you set `BROWSER_MAX_SESSIONS`). Ask an agent to close a browser it no longer needs, wait for an idle one to close, or raise the cap with `BROWSER_MAX_SESSIONS` (up to `10`). See [Browser → Limits](/browser#limits).
   </Accordion>
 
   <Accordion title="Port on this machine is not allowed">

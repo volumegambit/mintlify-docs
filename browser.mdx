@@ -8,7 +8,7 @@ The browser tool lets an agent use websites the way you would: open a page, read
 Use it when `web_fetch` isn't enough: pages that need JavaScript, sites you have to sign in to, multi-step forms, or anything where the agent has to click through.
 
 <Note>
-  The browser doesn't try to pass as a person. It leaves the browser's automation signals in place and makes no attempt to get around bot checks. When a site asks for a CAPTCHA or a 2FA code, a person solves it through the live view — see [Hand off a CAPTCHA or 2FA prompt](#hand-off-a-captcha-or-2fa-prompt).
+  The browser doesn't try to pass as a person. It reports itself as Chrome rather than HeadlessChrome in its user agent, but otherwise leaves the browser's automation signals — such as `navigator.webdriver` — in place, and makes no attempt to get around bot checks. When a site asks for a CAPTCHA or a 2FA code, a person solves it through the live view — see [Hand off a CAPTCHA or 2FA prompt](#hand-off-a-captcha-or-2fa-prompt).
 </Note>
 
 ## Get a browser
@@ -35,7 +35,7 @@ You'll be offered it in two places:
 
 Once installed, the managed browser **updates itself weekly**. An update never interrupts a browser an agent is using — it waits until no browser is open. You can also click **Check for an update now** on the **Browser** settings page.
 
-If you install Chrome or Edge later, your agents switch to it and the managed browser stops updating. It stays on disk; the **Browser** settings page tells you so.
+If you install Chrome or Edge later, your agents switch to it once you click **Check again** on **Settings → Browser** or restart the HQ, and the managed browser stops updating. It stays on disk; the **Browser** settings page tells you so.
 
 ### Settings → Browser
 
@@ -167,14 +167,14 @@ When an agent calls `browser_screenshot`, the tool row in chat shows a thumbnail
 | Limit | Value |
 |-------|-------|
 | Tabs per browser | **8.** Asking for a ninth fails with `a session can hold at most 8 tabs`, and a tab a page opens beyond that is closed straight away. The last tab can't be closed. |
-| Browsers open at once, per HQ | **3** by default, across every agent and conversation. Opening one more fails with `this HQ is already running 3 browser sessions`. Change it with `BROWSER_MAX_SESSIONS`. |
+| Browsers open at once, per HQ | **3** by default, across every agent and conversation. Opening one more fails with `this HQ is already running <n> browser sessions`, where `<n>` is the cap. Change it with `BROWSER_MAX_SESSIONS`. |
 | Idle time | A browser nobody has used for **15 minutes** closes on its own. A named profile keeps its cookies; a fresh session is deleted. |
 
 ## Privacy and security
 
-- **The browser can't reach the HQ itself.** Pages can't load the HQ's own ports on the HQ's machine — whether addressed as `localhost`, `127.0.0.1`, the machine's own network address, or its hostname — so a web page can't drive the agent's browser into your HQ's management or chat APIs. Other local addresses stay open, so an agent can still test a web app you run locally. A blocked address fails with `port <port> on this machine is not allowed`.
+- **The browser can't reach the HQ itself.** Pages can't load the HQ's own ports on the HQ's machine — whether addressed as `localhost`, `127.0.0.1`, the machine's own network address, or its hostname — so a web page can't drive the agent's browser into your HQ's management or chat APIs. Other local addresses stay open, so an agent can still test a web app you run locally. If the agent tries to open one, it gets `port <port> on this machine is not allowed`; if a page tries to load one itself, the request is blocked.
 - **What you see and type in the live view stays out of the logs.** The HQ doesn't write live-view frames or your input to its logs — only the kind of input (a click, a key) is recorded, never what you typed. The agent never sees the live view or your input.
-- **Profiles hold real sign-ins.** A profile's cookies stay signed in to the sites the agent used. The profile folders under `~/.dash/gateway/browser-profiles/` are readable only by the user account the HQ runs as, but anyone signed in as that user can read them. Delete profiles you no longer need.
+- **Profiles hold real sign-ins.** A profile's cookies stay signed in to the sites the agent used. On macOS and Linux, the profile folders under `~/.dash/gateway/browser-profiles/` are readable only by the user account the HQ runs as, but anyone signed in as that user can read them. Delete profiles you no longer need.
 
 ## Configuration
 
@@ -183,6 +183,6 @@ Two environment variables, set where the HQ runs, change how the browser works. 
 | Variable | Description |
 |----------|-------------|
 | `BROWSER_MAX_SESSIONS` | How many browsers the HQ runs at once, across all agents. A whole number from `1` to `10` (default: `3`). Any other value is ignored with a warning in the HQ log, and the default is used. |
-| `BROWSER_EXECUTABLE_PATH` | Full path to the browser to use. It's the first place the HQ looks. If nothing exists at that path, the HQ falls back to finding Chrome or Edge as usual. |
+| `BROWSER_EXECUTABLE_PATH` | Full path to the browser to use. It's the first place the HQ looks. If nothing is there, or it doesn't start, the HQ falls back to finding Chrome or Edge as usual. |
 
 See [Troubleshooting → Browser](/troubleshooting#browser) if something goes wrong.
