@@ -419,6 +419,87 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 </AccordionGroup>
 
+## Browser
+
+<AccordionGroup>
+  <Accordion title="No browser available">
+    **Error (from a `browser_*` tool):**
+    ```
+    No browser available. Open DashSquad Desktop → Settings → Browser to install one.
+    ```
+
+    **Fix:** The HQ found neither Chrome nor Edge on its machine, and no managed browser is installed. Install Google Chrome or Microsoft Edge, or open **Settings → Browser** in Desktop and click **Download browser** (about 190 MB). Then click **Check again**. If your browser is somewhere unusual, point `BROWSER_EXECUTABLE_PATH` at it. See [Browser → Get a browser](/browser#get-a-browser).
+  </Accordion>
+
+  <Accordion title="A browser was found but did not start in time">
+    **Error:**
+    ```
+    A browser was found at <path> but did not start in time. Try again in a moment.
+    ```
+
+    Desktop shows the same thing as **We found … but it didn't start in time.**
+
+    **Fix:** The browser is installed but didn't start within about 15 seconds — usually because the machine is busy. Wait a moment and try again, or click **Check again** on **Settings → Browser**. You don't need to download another browser for this; if it keeps happening, **Download a browser anyway (about 190 MB)** gives your agents a managed browser instead.
+  </Accordion>
+
+  <Accordion title="The browser download failed">
+    **Symptom:** **Settings → Browser** (or the **Your agent needs a browser** card) shows an error instead of the progress bar.
+
+    **Fix:** The download needs an internet connection the whole way through — about 190 MB. Check your connection and click **Try again**. After downloading, the HQ launches the browser once to check it works; if that check fails, the new download is discarded and any browser you already had is kept.
+  </Accordion>
+
+  <Accordion title="Profile is in use by another conversation">
+    **Error:**
+    ```
+    profile "<name>" is in use by conversation "<conversation>"
+    ```
+
+    **Fix:** A saved profile can be open in only one conversation at a time. Ask the agent in the named conversation to close its browser, or wait — a browser closes on its own after 15 minutes of inactivity. The same message appears if you try to delete a profile that's in use. See [Browser → Profiles](/browser#profiles).
+  </Accordion>
+
+  <Accordion title="The HQ is already running 3 browser sessions">
+    **Error:**
+    ```
+    this HQ is already running 3 browser sessions
+    ```
+
+    **Fix:** The HQ caps how many browsers are open at once, across every agent. Ask an agent to close a browser it no longer needs, wait for an idle one to close, or raise the cap with `BROWSER_MAX_SESSIONS` (up to `10`). See [Browser → Limits](/browser#limits).
+  </Accordion>
+
+  <Accordion title="Port on this machine is not allowed">
+    **Error:**
+    ```
+    port <port> on this machine is not allowed
+    ```
+
+    **This is intentional.** The browser can't open the HQ's own ports on the HQ's machine. Other local addresses work. See [Browser → Privacy and security](/browser#privacy-and-security).
+  </Accordion>
+
+  <Accordion title="No browser is open in this conversation">
+    **Symptom:** You click **View browser** and the view shows **No browser is open in this conversation**.
+
+    **Fix:** The agent closed its browser, or it closed after 15 minutes of inactivity. **View browser** can still show after that, because the chat remembers the conversation used a browser. Ask the agent to open the browser again, then reopen the view.
+  </Accordion>
+
+  <Accordion title="Live view is not available on this HQ">
+    **Symptom:** You click **View browser** and see **Live view is not available on this HQ**.
+
+    **Fix:** Your HQ is older than the app you're viewing from and doesn't support the live view. Update the HQ, then open the view again. If Desktop runs the HQ for you, update Desktop on the HQ's machine and restart it.
+  </Accordion>
+
+  <Accordion title='"Update Dash" right after an agent opens a browser'>
+    **Symptom:** In Desktop, a turn fails with **Update Dash: the HQ sent an unsupported chat frame** as soon as an agent opens a browser.
+
+    **Fix:** Your Desktop app is older than the HQ it's connected to and doesn't recognize the message the HQ sends when a browser opens or closes. Update Desktop to the latest version. Your conversation is safe on the HQ.
+  </Accordion>
+
+  <Accordion title="Clicks and typing do nothing in the live view">
+    **Symptom:** The live view shows **Agent is driving**, and nothing you do reaches the page.
+
+    **This is intentional.** While the agent is working, only the agent controls the browser. Wait for its turn to finish — the view switches to **You have control** — or stop the turn. See [Browser → Who has control](/browser#who-has-control).
+  </Accordion>
+</AccordionGroup>
+
 ## Plugins
 
 <AccordionGroup>

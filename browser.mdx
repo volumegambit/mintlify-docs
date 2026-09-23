@@ -1,0 +1,188 @@
+---
+title: "Browser"
+description: "Let an agent drive a real Chrome or Edge on your HQ's machine — with saved profiles, a live view you can take over, and clear limits."
+---
+
+The browser tool lets an agent use websites the way you would: open a page, read it, click, type, fill in forms, switch tabs, and download files. It drives a **real Chrome or Microsoft Edge** on the machine that runs your HQ. The browser runs **headless** — there's no window on screen — and you can watch it, or take it over, from the [live view](#live-view).
+
+Use it when `web_fetch` isn't enough: pages that need JavaScript, sites you have to sign in to, multi-step forms, or anything where the agent has to click through.
+
+<Note>
+  The browser doesn't try to pass as a person. It leaves the browser's automation signals in place and makes no attempt to get around bot checks. When a site asks for a CAPTCHA or a 2FA code, a person solves it through the live view — see [Hand off a CAPTCHA or 2FA prompt](#hand-off-a-captcha-or-2fa-prompt).
+</Note>
+
+## Get a browser
+
+The HQ looks for a browser in this order and uses the first one that actually starts:
+
+1. The path in `BROWSER_EXECUTABLE_PATH`, if you set one and it exists (see [Configuration](#configuration)).
+2. **Google Chrome**, then **Microsoft Edge**, installed in the usual place:
+   - **macOS** — `/Applications` or `~/Applications`
+   - **Windows** — the standard Chrome and Edge install folders under `%LOCALAPPDATA%` and Program Files
+   - **Linux** — `google-chrome`, `google-chrome-stable`, `chromium`, `chromium-browser`, or `microsoft-edge` on your `PATH`
+3. A **managed browser** that DashSquad downloaded for you.
+
+A browser that is installed but doesn't start within about 15 seconds is skipped, and the HQ tries the next one.
+
+### The managed browser
+
+If you have neither Chrome nor Edge, Desktop can download a browser for your agents. It's about **190 MB to download and about 370 MB on disk**, and DashSquad only downloads it when you ask.
+
+You'll be offered it in two places:
+
+- **The install card.** When you turn the browser on for an agent and no browser is found, a card titled **Your agent needs a browser** appears on the agent's page. Click **Download browser (about 190 MB)** to download it, or **I'll install Chrome myself** to open the Chrome download page instead. When the download finishes and the browser passes a test launch, the card shows **Browser ready.**
+- **Settings → Browser.** Click **Download browser**. The page shows a progress bar, then **Checking that it starts…** while the HQ launches the new browser once to make sure it works.
+
+Once installed, the managed browser **updates itself weekly**. An update never interrupts a browser an agent is using — it waits until no browser is open. You can also click **Check for an update now** on the **Browser** settings page.
+
+If you install Chrome or Edge later, your agents switch to it and the managed browser stops updating. It stays on disk; the **Browser** settings page tells you so.
+
+### Settings → Browser
+
+Open **Settings → Browser** in Desktop to see which browser your agents use — **Google Chrome**, **Microsoft Edge**, or the managed browser — with its full path, and **Browsers open right now** with a count. Click **Check again** after installing or removing a browser.
+
+## Turn it on for an agent
+
+In Desktop, open the agent's **Configuration** tab, open the **Tools** card, tick the **Web** group, and click **Save**. The **Web** group turns on `web_search`, `web_fetch`, and the browser together — it's one checkbox for the whole group. You can also pick it when you create an agent in the **Deploy** wizard.
+
+Once the browser is on, the agent's page gets a **Browser** tab for [managing its profiles](#manage-profiles-in-desktop).
+
+## The browser tools
+
+Turning on the browser gives the agent these tools. Each browser belongs to one conversation: two conversations with the same agent get two separate browsers.
+
+| Tool | What it does | Parameters |
+|------|--------------|------------|
+| `browser_open` | Open a browser session for this conversation. Pass `profile` to load one of your persistent profiles (cookies and logins survive), or omit it for a fresh session. Returns a snapshot. | `profile` (optional) — Name of one of your persistent profiles (a-z, 0-9, "-"). Created if new. Omit for a fresh, throwaway session.<br />`url` (optional) — URL to load after opening |
+| `browser_navigate` | Load a URL, or go back, forward or reload. Returns the new snapshot. | `url` (optional) — http(s) URL to load<br />`action` (optional) — `back`, `forward`, or `reload` |
+| `browser_snapshot` | Read the current page. Refs from an earlier snapshot stop working once you take a new one. | `mode` (optional) — interactive (default): accessibility tree with [ref=...] markers. text: readable page text, no refs, cheaper for reading. |
+| `browser_act` | Act on an element by its ref from the latest snapshot, press a key, or answer an open dialog. Returns the new snapshot. | `action` (required) — `click`, `type`, `select`, `hover`, `press`, `upload`, or `dialog`<br />`ref` (optional) — Element ref from the LATEST snapshot, copied exactly, e.g. "e12" or "f1e12"<br />`value` (optional) — type: text. select: option label. press: key name (Enter, Tab). upload: workspace file path. dialog: accept \| dismiss. |
+| `browser_screenshot` | Capture the page or one element as an image. Prefer browser_snapshot; use this when layout or visuals matter. | `ref` (optional) — Capture only this element<br />`fullPage` (optional) — `true` or `false` |
+| `browser_tabs` | List, open, switch to or close tabs. `index` comes from the list. | `action` (required) — `list`, `new`, `switch`, or `close`<br />`index` (optional) — a tab number from the list |
+| `browser_profiles` | List your persistent browser profiles, or delete one by name. | `action` (required) — `list` or `delete`<br />`name` (optional) — the profile to delete |
+| `browser_close` | Close this conversation’s browser. A named profile keeps its cookies. | none |
+
+A few things to know:
+
+- **`browser_screenshot` is only offered to image-capable models.** If the agent's model can't read images, it doesn't get this tool and works from snapshots instead.
+- **Sub-agents get fresh sessions only.** A [sub-agent](/tools#sub-agents) with the browser gets its own browser, separate from its parent's. It can't open a named profile — its `browser_open` has only the `url` parameter and reads "Open a browser session for this conversation. Returns a snapshot." — and it doesn't get `browser_profiles`.
+- **Web pages are untrusted.** Everything the browser returns is marked to the agent as web page content, not instructions.
+- **Downloads** go to a `downloads` folder in the agent's working directory. **Uploads** (`browser_act` with `upload`) accept only files inside the agent's working directory.
+- **Only `http` and `https` addresses** can be opened.
+- **Site permissions are denied.** Requests for things like your location, camera, or notifications are refused.
+
+## Profiles
+
+When the agent opens a browser, it chooses one of two kinds of session:
+
+- **A fresh session** — a throwaway browser with no cookies or history. It's deleted when the browser closes. This is what the agent gets when it doesn't name a profile.
+- **A named profile** — a persistent browser profile with a name the agent picks (for example `shopping` or `work-email`). Cookies, logins, and site data survive between conversations, so you only sign in once. A profile that doesn't exist yet is created the first time the agent opens it.
+
+The agent decides which to use each time it opens the browser — ask it to use a particular profile if you want one. Profile names use lowercase letters, digits, and `-`, up to 32 characters. Each agent has its own profiles; one agent can't open another's.
+
+**One conversation at a time.** A profile can only be open in one conversation at a time. If another conversation already has it open, the agent gets:
+
+```
+profile "<name>" is in use by conversation "<conversation>"
+```
+
+where `<conversation>` is that conversation's title (or its id if it has no title). Close the browser in the other conversation — ask the agent there to close it — or wait for it to close on its own after 15 minutes of inactivity.
+
+Profiles are stored on the HQ's machine under `~/.dash/gateway/browser-profiles/`, in one folder per agent.
+
+### Manage profiles in Desktop
+
+Open the agent's page in Desktop and click the **Browser** tab (it appears only when the agent has the browser turned on). Each saved profile shows its name, an **In use** badge if a conversation has it open, when it was last used, and its size on disk.
+
+To delete a profile, click **Delete** and confirm. Deleting signs the agent out of every site in it. **Delete** is disabled while the profile is in use — **Close the agent's browser first**.
+
+An agent with no saved profiles shows: **This agent has no saved browser profiles. It creates one when it opens the browser with a profile name.**
+
+An agent can also list and delete its own profiles with `browser_profiles`.
+
+## Live view
+
+The live view shows you the agent's browser as it runs, and lets you use it yourself between turns. It's available in **Desktop** and the **[web client](/web)**.
+
+### Open it
+
+In a chat with an agent that has opened a browser, click **View browser** — in Desktop it's a globe icon in the chat's status bar; in the web client it's a button in the top bar. In Desktop the view opens as a panel beside the chat; in the web client it's a column beside the chat, or a full-screen overlay when the window is 768 px wide or narrower.
+
+You'll see **Connecting to the browser…** for a moment, then the page title, its address, and a live picture of the page.
+
+If the conversation has no browser open, the view shows **No browser is open in this conversation**.
+
+### Who has control
+
+The top of the view shows who has the browser:
+
+- **Agent is driving** — a turn is running. You can watch, but your clicks and keys don't reach the page.
+- **You have control** — the agent isn't working. Click, type, scroll, and use the keyboard in the page picture just as you would in a normal browser.
+
+While you have control:
+
+- **Keys go to the page**, not to the app.
+- **Cmd+V** (**Ctrl+V** on Windows and Linux) pastes your clipboard into the page. Pasted text is cut to 4,096 characters.
+- If the page opens a dialog, the view shows **The page is showing a dialog: "…"** with the dialog's message.
+
+Watching alone doesn't keep the browser open: a browser nobody has used for 15 minutes closes, even with the live view on screen. Clicking or typing in it yourself counts as use.
+
+### One viewer at a time
+
+Each browser can have only one live view open. Opening it somewhere else — another Desktop window, or the web client — ends the first one. When a live view ends, it tells you why:
+
+| Message | What happened |
+|---------|---------------|
+| **Live view ended. (opened somewhere else)** | Someone opened the live view for this browser in another window or client. |
+| **Live view ended. (the browser closed)** | The agent closed the browser, or it closed after 15 minutes of inactivity. |
+| **Live view ended. (connection lost)** | The app lost its connection to the HQ. |
+
+A sub-agent's browser can't be viewed yet.
+
+### Hand off a CAPTCHA or 2FA prompt
+
+The browser won't solve CAPTCHAs or sign-in challenges on its own. Tell your agent in its instructions — or in the chat — to stop and ask you when it hits one, then:
+
+<Steps>
+  <Step title="The agent stops and asks">
+    The agent says it's stuck — for example, a CAPTCHA or a code prompt on a sign-in page — and ends its turn.
+  </Step>
+  <Step title="You open the live view and solve it">
+    Click **View browser**. Once it shows **You have control**, solve the CAPTCHA or type the code into the page.
+  </Step>
+  <Step title="You reply">
+    Tell the agent you're done, in the same conversation.
+  </Step>
+  <Step title="The agent continues">
+    The agent picks up from the page you left it on. If it used a named profile, the sign-in is saved for next time.
+  </Step>
+</Steps>
+
+### Screenshots in chat
+
+When an agent calls `browser_screenshot`, the tool row in chat shows a thumbnail of the capture. Click it to enlarge it; click again to shrink it. The thumbnail is kept with the conversation.
+
+## Limits
+
+| Limit | Value |
+|-------|-------|
+| Tabs per browser | **8.** Asking for a ninth fails with `a session can hold at most 8 tabs`, and a tab a page opens beyond that is closed straight away. The last tab can't be closed. |
+| Browsers open at once, per HQ | **3** by default, across every agent and conversation. Opening one more fails with `this HQ is already running 3 browser sessions`. Change it with `BROWSER_MAX_SESSIONS`. |
+| Idle time | A browser nobody has used for **15 minutes** closes on its own. A named profile keeps its cookies; a fresh session is deleted. |
+
+## Privacy and security
+
+- **The browser can't reach the HQ itself.** Pages can't load the HQ's own ports on the HQ's machine — whether addressed as `localhost`, `127.0.0.1`, the machine's own network address, or its hostname — so a web page can't drive the agent's browser into your HQ's management or chat APIs. Other local addresses stay open, so an agent can still test a web app you run locally. A blocked address fails with `port <port> on this machine is not allowed`.
+- **What you see and type in the live view stays out of the logs.** The HQ doesn't write live-view frames or your input to its logs — only the kind of input (a click, a key) is recorded, never what you typed. The agent never sees the live view or your input.
+- **Profiles hold real sign-ins.** A profile's cookies stay signed in to the sites the agent used. The profile folders under `~/.dash/gateway/browser-profiles/` are readable only by the user account the HQ runs as, but anyone signed in as that user can read them. Delete profiles you no longer need.
+
+## Configuration
+
+Two environment variables, set where the HQ runs, change how the browser works. When Desktop manages the HQ for you, set them in the environment you launch Desktop from — the HQ inherits them. Restart the HQ (or Desktop) to apply a change.
+
+| Variable | Description |
+|----------|-------------|
+| `BROWSER_MAX_SESSIONS` | How many browsers the HQ runs at once, across all agents. A whole number from `1` to `10` (default: `3`). Any other value is ignored with a warning in the HQ log, and the default is used. |
+| `BROWSER_EXECUTABLE_PATH` | Full path to the browser to use. It's the first place the HQ looks. If nothing exists at that path, the HQ falls back to finding Chrome or Edge as usual. |
+
+See [Troubleshooting → Browser](/troubleshooting#browser) if something goes wrong.

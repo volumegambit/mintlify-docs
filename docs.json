@@ -60,6 +60,7 @@
               "skills",
               "memory",
               "tools",
+              "browser",
               "plugins",
               "secrets"
             ]
