@@ -107,13 +107,6 @@ Tools are what your agents can *do*. Each tool gives an agent a real-world capab
 
     Not affected by workspace sandboxing.
   </Tab>
-  <Tab title="browser">
-    Browse and interact with websites in a real browser — a headless Chrome or Edge on the HQ's machine. One toggle gives the agent up to eight `browser_*` tools: open, navigate, read the page, click and type, screenshot, tabs, profiles, and close.
-
-    In Desktop, ticking the **Web** group turns on `web_search`, `web_fetch`, and the browser together.
-
-    See [Browser](/browser) for the full tool list, saved profiles, the live view, and limits.
-  </Tab>
 </Tabs>
 
 ## Skills
@@ -370,6 +363,20 @@ The four tools:
 </Tabs>
 
 A worker is a sub-agent, so it gets [`ask_orchestrator`](#sub-agents) like any other child, and it draws the same row in chat. Watch and steer one from the tasks panel, the tasks sheet, or Desktop's **Sub-agents** panel — see [Architecture → Sub-agents](/architecture#sub-agents).
+
+## Asking you questions
+
+Sometimes an agent hits a decision only you can make. Rather than guess, it can ask you directly with `ask_user_question`: up to four multiple-choice questions shown together as a card, right in the chat.
+
+Each question lists 2–4 options with a short description, and often one marked **Recommended**. Tap the options you want (a question may allow more than one), or choose **Other** to type a free-text answer instead, then tap **Submit** to send your answers. Tapping ✕ skips the question.
+
+You don't have to use the card at all — typing a normal reply works too, and the model reads it as your answer. The card then collapses to **Replied in chat**.
+
+In voice mode, the agent reads each question and its options aloud, and you answer by speaking.
+
+Either way, the agent's turn pauses until you answer or skip, so it won't keep going on a guess.
+
+Available on iPhone, iPad, Android, web, and Desktop. Every agent gets it automatically — it's not part of the per-agent tool selection.
 
 ## Workspace sandboxing
 
