@@ -521,6 +521,10 @@ one Desktop shows.
 | `GET` | `/providers` | Every provider the HQ has a catalog for, with each key's name and kind (`api_key` or `oauth`). Never a key value |
 | `PUT` | `/providers/:id/keys/:name` | Add or replace one key. Body: `{ "value": "<api key>" }`. Answers `{ "ok": true }` |
 | `DELETE` | `/providers/:id/keys/:name` | Remove one key, plus any OAuth sign-in data stored with it |
+| `POST` | `/providers/:id/sign-in` | Start a subscription sign-in. Body: `{ "keyName": "<name>" }` |
+| `GET` | `/providers/:id/sign-in/:attemptId` | Poll an attempt: `pending`, `complete`, `failed`, `cancelled`, or `expired` |
+| `POST` | `/providers/:id/sign-in/:attemptId/code` | Finish a `code` attempt. Body: `{ "code": "<code shown by the provider>" }` |
+| `DELETE` | `/providers/:id/sign-in/:attemptId` | Cancel a pending attempt |
 
 ```bash
 curl -i -X PUT "$MOBILE_URL/mobile/v1/providers/anthropic/keys/default" \
@@ -534,6 +538,21 @@ characters, or contains whitespace answers `400 validation_failed`. An unknown p
 `DELETE` of a key that doesn't exist, answers `404 not_found`. Replacing an OAuth sign-in with a
 pasted key turns it into a plain API key. Any write refreshes the model list and speech
 availability on the next request.
+
+A provider whose list entry has a non-null `signIn` also supports subscription sign-in, which the
+HQ runs end to end — it keeps the PKCE verifier, the state, and the tokens, and an attempt never
+carries a token:
+
+- `kind: "code"` (Claude Pro/Max): open the attempt's `authorizeUrl`, sign in, and post the code
+  the provider then shows (`code#state`, a redirect URL, or the bare code) to `.../code`. A code
+  from another attempt, or one the provider rejects, answers `400 validation_failed`; a rejected
+  code also fails the attempt, since codes are single-use.
+- `kind: "device_code"` (ChatGPT): show `userCode` and `verificationUrl`; the user enters the code
+  there on any device while you poll `GET` until the status leaves `pending`.
+
+Attempts live in the HQ's memory for up to 15 minutes. Starting a new sign-in for the same key
+cancels an earlier pending one. On success the key is stored with `kind: "oauth"` and refreshed by
+the HQ.
 
 ## Models
 
