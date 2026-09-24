@@ -8,8 +8,8 @@ Desktop uses to deploy agents, connect messaging apps, store credentials, and in
 It binds to `127.0.0.1` on port `9300` by default. Change the port with `--management-port`.
 
 This page documents the administrative routes. Phones, tablets, and the web app never receive
-administrative access. They use the versioned `/mobile/v1` namespace instead, documented in the
-[HQ Mobile API](/api-hq-mobile).
+administrative access. They use the versioned `/mobile/v1` and `/mobile/v2` namespaces instead,
+documented in the [HQ Mobile API](/api-hq-mobile).
 
 ## Overview
 
@@ -17,19 +17,27 @@ The HQ runs up to three HTTP listeners:
 
 | Listener | Default address | Serves |
 |----------|-----------------|--------|
-| Management | `http://127.0.0.1:9300` | Every route on this page, plus `/mobile/v1` |
+| Management | `http://127.0.0.1:9300` | Every route on this page, plus `/mobile/v1` and `/mobile/v2` |
 | Channel server | `http://127.0.0.1:9200` | The `/ws/chat` WebSocket. See [HQ Chat WebSocket](/api-hq-chat-websocket) |
-| Mobile LAN | `https://0.0.0.0:9400` | Only `/mobile/v1`, `/mobile/v1/*`, and `/ws/chat`. Runs only when LAN TLS is configured |
+| Mobile LAN | `https://0.0.0.0:9400` | Only `/mobile/v1`, `/mobile/v2`, the paths below them, and `/ws/chat`. Runs only when LAN TLS is configured |
 
-The mobile LAN listener forwards each `/mobile/v1` request to the management listener's own
-handlers in the same process. A request for any other path, including every route on this page,
-never reaches them. The hosted relay works the same way: it forwards only `/mobile/v1` traffic,
-which the HQ replays against its management listener. Administrative routes are therefore
-reachable only from the HQ machine itself.
+The mobile LAN listener forwards each `/mobile/v1` and `/mobile/v2` request to the management
+listener's own handlers in the same process. A request for any other path, including every route
+on this page, never reaches them. The hosted relay works the same way: it forwards only
+`/mobile/v1` and `/mobile/v2` traffic, which the HQ replays against its management listener.
+Administrative routes are therefore reachable only from the HQ machine itself.
 
-Each route below is marked **Loopback only** or **Also under `/mobile/v1`**. A route that is also
-under `/mobile/v1` has the same handler at `/mobile/v1` plus the path, authenticated with the mobile
-bearer. Some mobile variants accept fewer fields; the differences are noted in each section.
+Each route below is marked **Loopback only** or **Also under `/mobile/v1`**, and, where it applies,
+**`/mobile/v2`**. A route that is also under a mobile namespace has the same handler at
+`/mobile/v1` or `/mobile/v2` plus the path, authenticated with the mobile bearer. Some mobile
+variants accept fewer fields; the differences are noted in each section. The `/mobile/v2`
+conversation routes return v2 bodies and are documented in
+[Steer and Follow Up (Mobile API v2)](/api-hq-mobile#steer-and-follow-up-mobile-api-v2).
+
+Both the management and LAN listeners answer a malformed request target, such as one with an
+encoded `/` or a `..` segment, with `400` and
+`{"code":"validation_failed","error":"Invalid request target","retryable":false}` before any
+routing or authentication.
 
 ## Authentication
 
@@ -43,19 +51,20 @@ The HQ reads its tokens from startup flags:
 
 | Flag | Token | Accepted on |
 |------|-------|-------------|
-| `--token` | Management bearer | Every route outside `/mobile/v1` |
-| `--chat-token` | Mobile bearer | On this listener, only `/mobile/v1` and `/mobile/v1/*`. It is also the `/ws/chat` token |
+| `--token` | Management bearer | Every route outside `/mobile/v1` and `/mobile/v2` |
+| `--chat-token` | Mobile bearer | On this listener, only `/mobile/v1`, `/mobile/v2`, and the paths below them. It is also the `/ws/chat` token |
 
-The two scopes never overlap. The management bearer is rejected under `/mobile/v1`, and the
-mobile bearer is rejected everywhere else. The HQ refuses to start when both tokens are set to the
+The two scopes never overlap. The management bearer is rejected under `/mobile/v1` and
+`/mobile/v2`, and the mobile bearer is rejected everywhere else. The HQ refuses to start when both tokens are set to the
 same value. Relay mode requires both.
 
-Three paths skip the bearer check:
+Four paths skip the bearer check:
 
 | Path | Why |
 |------|-----|
 | `GET /health` | Liveness probe |
 | `GET /mobile/v1/health` | Liveness probe for native clients |
+| `GET /mobile/v2/health` | Liveness probe for v2 clients |
 | `/projects/ws` | WebSocket clients can't send headers. The route checks `?token=` against the management bearer itself |
 
 A missing or wrong bearer returns HTTP `401`:
@@ -81,33 +90,34 @@ Route groups return one of three error shapes. Each section below says which one
 | Speech | `{"code":"unavailable","error":"...","retryable":true}` | `/speech/*` |
 
 The management API sets no global body-size limit. The speech routes add their own limits.
-Administrative routes send no CORS headers. CORS applies only to `/mobile/v1`; see the
-[HQ Mobile API](/api-hq-mobile).
+Administrative routes send no CORS headers. CORS applies only to `/mobile/v1` and `/mobile/v2`;
+see the [HQ Mobile API](/api-hq-mobile#cors-and-browser-origins).
 
 ## Route index
 
 | Method | Path | Mobile | Purpose |
 |--------|------|--------|---------|
-| `GET` | `/health` | Yes | HQ status and capabilities (no auth) |
+| `GET` | `/health` | v1, v2 | HQ status and capabilities (no auth) |
 | `GET` | `/runtime/status` | No | Execution, pool, channel, and relay snapshot |
 | `POST` | `/lifecycle/shutdown` | No | Shut the HQ down gracefully |
-| `GET` | `/identity` | Yes | HQ ID and public key |
+| `GET` | `/info` | No | Agent summary and the chat API versions this HQ serves |
+| `GET` | `/identity` | v1, v2 | HQ ID and public key |
 | `GET` | `/lan-tls` | No | LAN certificate fingerprint |
-| `GET` | `/agents` | Yes | List agents |
-| `POST` | `/agents` | Yes | Create an agent |
-| `GET` | `/agents/:id` | Yes | Get one agent |
-| `PUT` | `/agents/:id` | Yes | Update an agent |
-| `DELETE` | `/agents/:id` | Yes | Delete an agent |
-| `POST` | `/agents/:id/disable` | Yes | Disable an agent |
-| `POST` | `/agents/:id/enable` | Yes | Enable an agent |
+| `GET` | `/agents` | v1, v2 | List agents |
+| `POST` | `/agents` | v1, v2 | Create an agent |
+| `GET` | `/agents/:id` | v1, v2 | Get one agent |
+| `PUT` | `/agents/:id` | v1, v2 | Update an agent |
+| `DELETE` | `/agents/:id` | v1, v2 | Delete an agent |
+| `POST` | `/agents/:id/disable` | v1, v2 | Disable an agent |
+| `POST` | `/agents/:id/enable` | v1, v2 | Enable an agent |
 | `POST` | `/agents/:agentId/conversation-title` | No | Generate a conversation title |
-| `GET` | `/agents/:id/memory` | Yes | List an agent's memories |
-| `GET` | `/agents/:id/memory/:name` | Yes | Read one memory |
+| `GET` | `/agents/:id/memory` | v1, v2 | List an agent's memories |
+| `GET` | `/agents/:id/memory/:name` | v1, v2 | Read one memory |
 | `PUT` | `/agents/:id/memory/:name` | No | Create or replace a memory |
-| `DELETE` | `/agents/:id/memory/:name` | Yes | Delete a memory |
+| `DELETE` | `/agents/:id/memory/:name` | v1, v2 | Delete a memory |
 | `GET` | `/agents/:id/memory/config` | No | Read memory settings |
 | `PATCH` | `/agents/:id/memory/config` | No | Change memory settings |
-| `GET` | `/agents/:id/skills` | Read-only view | List an agent's skills |
+| `GET` | `/agents/:id/skills` | v1 (read-only) | List an agent's skills |
 | `POST` | `/agents/:id/skills` | No | Create a skill |
 | `GET` | `/agents/:id/skills/:name` | No | Read one skill |
 | `PUT` | `/agents/:id/skills/:name` | No | Replace a skill's body |
@@ -117,14 +127,14 @@ Administrative routes send no CORS headers. CORS applies only to `/mobile/v1`; s
 | `PATCH` | `/agents/:id/skills/config` | No | Change skill settings |
 | `GET` | `/agents/:id/skills/:name/lessons` | No | Read a learned skill's lessons |
 | `DELETE` | `/agents/:id/skills/:name/lessons/:lessonId` | No | Retire one lesson |
-| `GET` | `/agents/:id/subagent-types` | Yes | Resolved sub-agent roster |
-| `GET` | `/agents/:id/subagent-definitions` | Yes | List per-agent definition files |
-| `GET` | `/agents/:id/subagent-definitions/:name` | Yes | Read one definition |
-| `PUT` | `/agents/:id/subagent-definitions/:name` | Yes | Write one definition |
-| `DELETE` | `/agents/:id/subagent-definitions/:name` | Yes | Delete one definition |
-| `GET` | `/conversations/:id/subagents` | Yes | List a conversation's sub-agents |
-| `POST` | `/subagents/:id/stop` | Yes | Stop a sub-agent |
-| `POST` | `/subagents/:id/resume` | Yes | Send a sub-agent a follow-up |
+| `GET` | `/agents/:id/subagent-types` | v1 | Resolved sub-agent roster |
+| `GET` | `/agents/:id/subagent-definitions` | v1 | List per-agent definition files |
+| `GET` | `/agents/:id/subagent-definitions/:name` | v1 | Read one definition |
+| `PUT` | `/agents/:id/subagent-definitions/:name` | v1 | Write one definition |
+| `DELETE` | `/agents/:id/subagent-definitions/:name` | v1 | Delete one definition |
+| `GET` | `/conversations/:id/subagents` | v1 | List a conversation's sub-agents |
+| `POST` | `/subagents/:id/stop` | v1 | Stop a sub-agent |
+| `POST` | `/subagents/:id/resume` | v1 | Send a sub-agent a follow-up |
 | `GET` | `/agents/:id/swarm/runs` | No | List swarm runs |
 | `GET` | `/agents/:id/swarm/runs/:runId` | No | Get one swarm run |
 | `POST` | `/agents/:id/swarm/runs/:runId/workers/:workerId/cancel` | No | Cancel one worker |
@@ -142,13 +152,15 @@ Administrative routes send no CORS headers. CORS applies only to `/mobile/v1`; s
 | `GET` | `/credentials` | No | List credential keys |
 | `POST` | `/credentials` | No | Set a credential |
 | `DELETE` | `/credentials/:key` | No | Delete a credential |
-| `GET` | `/models` | Read-only view | List available models |
+| `GET` | `/models` | v1, v2 (read-only) | List available models |
 | `POST` | `/models/refresh` | No | Force a fresh model fetch |
-| `GET` | `/speech/config` | Yes | Speech settings and provider availability |
-| `PATCH` | `/speech/config` | Yes | Change speech settings |
-| `GET` | `/speech/models` | Yes | List speech models |
-| `POST` | `/speech/transcriptions` | Yes | Transcribe a clip |
-| `POST` | `/speech/speech` | Yes | Synthesize speech |
+| `GET` | `/speech/config` | v1 | Speech settings and provider availability |
+| `PATCH` | `/speech/config` | v1 | Change speech settings |
+| `GET` | `/speech/models` | v1 | List speech models |
+| `POST` | `/speech/transcriptions` | v1 | Transcribe a clip |
+| `POST` | `/speech/speech` | v1 | Synthesize speech |
+| `GET` | `/message-routing/config` | No | Read the automatic Steer and Follow Up routing settings |
+| `PATCH` | `/message-routing/config` | No | Change the automatic routing settings |
 | `GET` | `/runtime/mcp/servers` | No | List MCP servers |
 | `POST` | `/runtime/mcp/servers` | No | Add an MCP server |
 | `GET` | `/runtime/mcp/servers/:name` | No | Get one MCP server |
@@ -181,18 +193,26 @@ Administrative routes send no CORS headers. CORS applies only to `/mobile/v1`; s
 | `POST` | `/issues/:id/sessions` | No | Link a session to an issue |
 | `GET` | `/inbox` | No | List inbox items |
 | `POST` | `/inbox/:issue_id/mark-read` | No | Mark an inbox item read |
-| `GET` | `/events` | Yes | Server-sent event stream |
-| `GET` | `/agents/:agentId/conversations/:conversationId/events` | Yes | Replay a conversation's durable events |
+| `GET` | `/events` | v1, v2 | Server-sent event stream |
+| `GET` | `/agents/:agentId/conversations/:conversationId/events` | v1 | Replay a conversation's durable events |
+| `GET` | `/agents/:agentId/conversations/:conversationId/events-v2` | No | Replay a conversation's v2 frames. Loopback name for the v2 replay route |
+| `GET` | `/conversations/:id/bootstrap` | v2 | Conversation, messages, and queue snapshot |
+| `GET` | `/conversations/:id/messages-v2` | No | Page through v2 messages. Loopback name for the v2 messages route |
 
-Conversation routes, `POST /mobile/v1/ws-ticket`, and the chat WebSocket are covered on other
-pages. See [Conversations and chat](#conversations-and-chat).
+The Mobile column lists the namespaces that serve the same route with the mobile bearer. `v1`
+means `/mobile/v1` plus the path, and `v2` means `/mobile/v2` plus the path. The last three rows
+return v2 bodies on loopback. See [Mobile API v2 on loopback](#mobile-api-v2-on-loopback).
+
+Conversation routes, `POST /mobile/v1/ws-ticket`, `POST /mobile/v2/ws-ticket`, and the chat
+WebSocket are covered on other pages. See [Conversations and chat](#conversations-and-chat).
 
 ## Health and status
 
 ### GET /health
 
 Returns HQ status and the capabilities clients may use. No authentication is required.
-**Also under `/mobile/v1`** as `GET /mobile/v1/health`.
+**Also under `/mobile/v1`** as `GET /mobile/v1/health`. `GET /mobile/v2/health` returns the same
+body with `apiVersion: 2` and two more capabilities, `chat-input-queue-v1` and `auto-delivery-v1`.
 
 ```bash
 curl http://127.0.0.1:9300/health
@@ -276,8 +296,8 @@ The HQ replies first, then starts shutdown about 100 ms later so the response is
 
 ### GET /identity
 
-Returns the HQ's stable ID and Ed25519 public key. **Also under `/mobile/v1`**, where native
-clients call it with the mobile bearer.
+Returns the HQ's stable ID and Ed25519 public key. **Also under `/mobile/v1` and `/mobile/v2`**,
+where native clients call it with the mobile bearer.
 
 ```json
 {
@@ -299,10 +319,30 @@ The route exists only when LAN TLS is configured; otherwise it returns `404`.
 { "certificateSha256": "<64 hex characters>" }
 ```
 
+### GET /info
+
+Returns a short summary of the HQ's agents and the chat API versions it serves. **Loopback only.**
+Agent secrets, system prompts, and workspaces are left out.
+
+```json
+{
+  "agents": [{ "name": "Private Helper", "model": "test/private-model", "tools": ["read", "write"] }],
+  "conversationApiVersions": [1, 2],
+  "chatCapabilities": ["chat-input-queue-v1", "auto-delivery-v1"]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `agents` | Each agent's `name`, `model`, and `tools` (an empty array when none are set) |
+| `conversationApiVersions` | Always `[1, 2]`: the Mobile API versions this HQ serves |
+| `chatCapabilities` | Always `["chat-input-queue-v1", "auto-delivery-v1"]`: the v2 chat capabilities |
+
 ## Agents
 
-Create and manage agents. Agents are saved to `~/.dash/gateway/agents.json`. Every agent route
-is **also under `/mobile/v1`**, where create and update accept fewer fields (see below).
+Create and manage agents. Agents are saved to `~/.dash/gateway/agents.json`. The list, create,
+read, update, delete, enable, and disable routes are **also under `/mobile/v1` and `/mobile/v2`**,
+where create and update accept fewer fields (see below).
 
 Agent routes use the structured error shape. Responses never include `providerApiKeys`.
 
@@ -368,7 +408,7 @@ curl http://127.0.0.1:9300/agents \
 ### POST /agents
 
 Creates an agent and returns it with HTTP `201`. `name`, `model`, and `systemPrompt` are required.
-Under `/mobile/v1`, only those three fields are accepted.
+Under `/mobile/v1` and `/mobile/v2`, only those three fields are accepted.
 
 ```bash
 curl -X POST http://127.0.0.1:9300/agents \
@@ -389,7 +429,7 @@ Returns one agent object.
 ### PUT /agents/:id
 
 Updates an agent's configuration and returns the updated agent. Send only the fields to change;
-the body must not be empty. `name` cannot be changed. Under `/mobile/v1`, only `model` and
+the body must not be empty. `name` cannot be changed. Under `/mobile/v1` and `/mobile/v2`, only `model` and
 `systemPrompt` are accepted.
 
 ```bash
@@ -438,10 +478,10 @@ picks the active project the conversation best fits.
 ## Memory
 
 Read and edit what an agent remembers across conversations. See [Memory](/memory). The list,
-read, and delete routes are **also under `/mobile/v1`**. Writing a memory and the settings
-routes are **loopback only**.
+read, and delete routes are **also under `/mobile/v1` and `/mobile/v2`**. Writing a memory and
+the settings routes are **loopback only**.
 
-Memory routes use the plain error shape, including under `/mobile/v1`:
+Memory routes use the plain error shape, including under the mobile namespaces:
 
 | Status | When |
 |--------|------|
@@ -644,6 +684,8 @@ Merges fields into the agent's `skills` configuration and returns the result.
 | `learning` | `string` | `auto`, `on`, or `off`. Whether the agent records lessons after real work |
 | `minToolCalls` | `integer` | Tool calls a turn needs before it is reviewed for lessons. 0 or more |
 
+Any other field returns `400` with `{"error":"skills must contain only paths, urls, learning, minToolCalls"}`.
+
 ### GET /agents/:id/skills/:name/lessons
 
 Returns the lesson book for a skill the agent learned. Returns `404` when the skill has no lesson
@@ -680,7 +722,7 @@ deleted, and a later review will not propose it again.
 ## Sub-agents
 
 Manage the helper agents an agent can start, and the sub-agents already running. Every route in
-this section is **also under `/mobile/v1`**.
+this section is **also under `/mobile/v1`**. None of them is under `/mobile/v2`.
 
 **Definitions.** The five definition routes read and write the per-agent sub-agent types. On the
 loopback API they use the plain error shape; under `/mobile/v1` they use the structured shape. A
@@ -1052,7 +1094,7 @@ Deletes a credential and returns `{"ok": true}`. URL-encode the key.
 ## Models
 
 List the models agents can use. See [AI Providers](/ai-providers). `GET /models` is **also under
-`/mobile/v1`** as a read-only view; `POST /models/refresh` is **loopback only**.
+`/mobile/v1` and `/mobile/v2`** as a read-only view; `POST /models/refresh` is **loopback only**.
 
 The HQ fetches each configured provider's model list, filters it through its bundled provider
 catalogs, and caches the result for six hours. A provider that fails is retried after five
@@ -1088,7 +1130,7 @@ curl http://127.0.0.1:9300/models \
 | `supportedModelsReviewedAt` | Review date of the newest provider catalog |
 
 On the loopback API, `?debug=true` adds `bootstrap` (the catalogs' built-in models), `patterns`,
-`providersConfigured`, and `providersAvailable`. Under `/mobile/v1`, any query parameter returns
+`providersConfigured`, and `providersAvailable`. Under `/mobile/v1` and `/mobile/v2`, any query parameter returns
 `400` with the structured `validation_failed` error.
 
 ### POST /models/refresh
@@ -1098,7 +1140,7 @@ Fetches the model list again, ignoring the cache, and returns the same shape as 
 ## Speech
 
 Dictation and read-aloud. Every speech route is **also under `/mobile/v1`**, with an identical
-handler. Hands-free voice mode runs over the chat WebSocket instead; see
+handler. The speech routes are not under `/mobile/v2`. Hands-free voice mode runs over the chat WebSocket instead; see
 [HQ Chat WebSocket](/api-hq-chat-websocket#voice-mode).
 
 Speech errors use the structured shape and pass the provider-level code through:
@@ -1222,6 +1264,52 @@ The success body is audio, not JSON. It streams as `audio/mpeg`, except for a PC
 (currently Google's Gemini TTS), which returns a complete `audio/wav` file. An error raised before
 the first audio chunk is still JSON, so accept `audio/mpeg`, `audio/wav`, and `application/json`.
 A declared `Content-Length` above 64 KiB returns `413 too_large`.
+
+## Message routing
+
+Configures how the HQ routes an `auto` input from a v2 client: as a Steer into the running
+response, as a Follow Up, or back to the user as a choice. See
+[Steer and Follow Up](/api-hq-mobile#how-the-queue-works). Both routes are **loopback only** and
+use the structured error shape. The settings are stored in `message-routing.json` in the HQ's data
+directory.
+
+### GET /message-routing/config
+
+```json
+{
+  "config": {
+    "mode": "auto",
+    "model": "typesafe/jev-1.13",
+    "steerMinConfidence": 0.8,
+    "followUpMinConfidence": 0.5,
+    "timeoutMs": 1500
+  },
+  "effectiveMode": "auto"
+}
+```
+
+The example shows the defaults.
+
+| Field | Description |
+|-------|-------------|
+| `config.mode` | `auto` routes with the model. `ask` rejects every `auto` input with `delivery_choice_required` so the client asks the user |
+| `config.model` | The routing model |
+| `config.steerMinConfidence` | Minimum confidence, `0` to `1`, to route as a Steer |
+| `config.followUpMinConfidence` | Minimum confidence, `0` to `1`, to route as a Follow Up |
+| `config.timeoutMs` | How long to wait for the model, `100` to `10000` ms |
+| `config.baseUrl` | Optional. The routing model's endpoint. Defaults to OpenRouter |
+| `effectiveMode` | `auto` or `ask`. `ask` when `mode` is `ask`, or when routing uses OpenRouter and no OpenRouter credential is set |
+| `reason` | `no_openrouter_key` when `mode` is `auto` but `effectiveMode` is `ask` for that reason |
+
+### PATCH /message-routing/config
+
+Send any subset of the `config` fields. The HQ merges them into the stored settings, saves them,
+and returns the same shape as `GET`. An unknown key or an out-of-range value returns `400`
+`validation_failed`, and nothing is saved.
+
+```json
+{ "mode": "ask" }
+```
 
 ## MCP servers
 
@@ -1673,8 +1761,8 @@ Marks an inbox item read and returns `{"ok": true}`.
 ### GET /events
 
 Streams HQ changes as [server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events).
-**Also under `/mobile/v1`**, which streams the same events. Clients use it to know when to refetch
-cached data.
+**Also under `/mobile/v1` and `/mobile/v2`**, which stream the same events. Clients use it to know
+when to refetch cached data.
 
 ```bash
 curl -N http://127.0.0.1:9300/events \
@@ -1715,7 +1803,9 @@ Ignore event types you don't recognize.
 
 Replays a conversation's durable chat events after a sequence number, so a client can catch up
 after a dropped WebSocket without resending the prompt. **Also under `/mobile/v1`.** Errors use
-the structured shape.
+the structured shape. The same path under `/mobile/v2` is a different route that takes `sinceV2Seq`
+and returns v2 frames; its loopback name is `/events-v2`. See
+[Mobile API v2 on loopback](#mobile-api-v2-on-loopback).
 
 | Query | Description |
 |-------|-------------|
@@ -1745,14 +1835,32 @@ event payloads and how to resume a turn.
 
 Conversations, messages, and chat are documented on their own pages:
 
-- [HQ Mobile API](/api-hq-mobile) covers conversation lists, messages, titles, deletion, and
-  `POST /mobile/v1/ws-ticket`. The conversation routes are also available unprefixed on this
-  loopback API with the management bearer.
+- [HQ Mobile API](/api-hq-mobile) covers conversation lists, messages, titles, deletion,
+  `POST /mobile/v1/ws-ticket`, and the v2 namespace with its bootstrap and queue. The v1
+  conversation routes are also available unprefixed on this loopback API with the management
+  bearer.
 - [HQ Chat WebSocket](/api-hq-chat-websocket) covers `/ws/chat`: sending messages, resumable
-  turns, answers, cancellation, voice mode, and browser live view.
+  turns, answers, cancellation, voice mode, browser live view, and the v2 Steer and Follow Up
+  protocol.
+
+### Mobile API v2 on loopback
+
+The unprefixed `/conversations` routes and the `/events` replay return v1 bodies. Mission Control
+reads v2 data on loopback, with the management bearer, through three routes whose names don't
+collide with v1:
+
+| Loopback route | Same handler as |
+|----------------|-----------------|
+| `GET /conversations/:id/bootstrap` | `GET /mobile/v2/conversations/:id/bootstrap` |
+| `GET /conversations/:id/messages-v2` | `GET /mobile/v2/conversations/:id/messages` |
+| `GET /agents/:agentId/conversations/:conversationId/events-v2` | `GET /mobile/v2/agents/:agentId/conversations/:conversationId/events` |
+
+Query parameters, bodies, and errors are documented in
+[Steer and Follow Up (Mobile API v2)](/api-hq-mobile#steer-and-follow-up-mobile-api-v2).
 
 <Note>
   The loopback management API on port `9300` and the channel server on port `9200` use separate
   management and chat credentials. Native clients never receive the management bearer: the pinned
-  mobile listener and the relay accept only the mobile bearer, on `/mobile/v1` and `/ws/chat`.
+  mobile listener and the relay accept only the mobile bearer, on `/mobile/v1`, `/mobile/v2`, and
+  `/ws/chat`.
 </Note>

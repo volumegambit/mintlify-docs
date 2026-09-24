@@ -1,13 +1,14 @@
 ---
 title: "HQ Mobile API"
-description: "Wire reference for /mobile/v1: the HTTP and SSE surface that iOS, Android, and web clients use to reach DashSquad HQ."
+description: "Wire reference for /mobile/v1 and /mobile/v2: the HTTP and SSE surface that iOS, Android, and web clients use to reach DashSquad HQ."
 ---
 
 The Mobile API is the versioned HTTP surface that native and browser clients use to talk to an HQ.
-Every route lives under `/mobile/v1`. It covers the gateway's health and identity, agents,
+Most of this page documents `/mobile/v1`. It covers the gateway's health and identity, agents,
 conversations and their history, sub-agents, speech, and a Server-Sent Events stream of cache
-invalidations. Live chat runs on a separate WebSocket, described in
-[HQ Chat WebSocket](/api-hq-chat-websocket).
+invalidations. The parallel `/mobile/v2` namespace adds Steer and a durable Follow Up queue. It is
+documented in [Steer and Follow Up (Mobile API v2)](#steer-and-follow-up-mobile-api-v2). Live chat
+runs on a separate WebSocket, described in [HQ Chat WebSocket](/api-hq-chat-websocket).
 
 The loopback-only administrative routes that Mission Control uses are documented in the
 [Management API](/api-reference). Those routes use a different bearer and are never reachable from
@@ -17,14 +18,21 @@ the LAN listener or the relay.
 
 ### Listeners and base URLs
 
-The same `/mobile/v1` handlers are reachable three ways. Each one runs the same authentication and
-returns the same bodies.
+The same `/mobile/v1` and `/mobile/v2` handlers are reachable three ways. Each one runs the same
+authentication and returns the same bodies.
 
 | Path to the HQ | Base URL | Transport | Notes |
 |----------------|----------|-----------|-------|
-| Pinned LAN listener | `https://<lan-host>:9400/mobile/v1` | HTTPS with a self-signed certificate, bound to `0.0.0.0` | Default port `9400`, set with `--lan-port`. Serves only `/mobile/v1` and `/ws/chat`. Every other path returns `404`. |
+| Pinned LAN listener | `https://<lan-host>:9400/mobile/v1` | HTTPS with a self-signed certificate, bound to `0.0.0.0` | Default port `9400`, set with `--lan-port`. Serves only `/mobile/v1`, `/mobile/v2`, and `/ws/chat`. Every other path returns `404`. |
 | Relay | `https://<gatewayId>.<zone>/mobile/v1` | HTTPS on 443, terminated at the relay | Requests reach the HQ through its outbound tunnel. See [Relay API](/api-relay). |
 | Loopback management server | `http://127.0.0.1:9300/mobile/v1` | Plain HTTP on loopback | Where relay traffic is replayed. Local tools can also call it directly. |
+
+Replace `/mobile/v1` with `/mobile/v2` in any base URL to reach the v2 namespace.
+
+Both the LAN listener and the management server check the raw request target before routing. A
+target containing `#`, a `.` or `..` segment, a backslash, an encoded `/` or `\` (`%2F` or `%5C`,
+at any depth of percent-encoding), or malformed percent-encoding is answered with `400`
+`validation_failed` and the error `Invalid request target`.
 
 The LAN listener starts only when the HQ has both a management token and a separate mobile token.
 Mission Control always supplies both. A gateway started without them stays loopback-only.
@@ -66,7 +74,8 @@ Clients must reject the legacy plaintext version 1 payload.
 
 ### Authentication
 
-Every route except `GET /mobile/v1/health` needs the HQ's **mobile bearer**:
+Every route except `GET /mobile/v1/health` and `GET /mobile/v2/health` needs the HQ's
+**mobile bearer**:
 
 ```text
 Authorization: Bearer <mobile-token>
@@ -74,8 +83,8 @@ Authorization: Bearer <mobile-token>
 
 - The mobile bearer is the HQ's phone-scoped token, set with the gateway's `--chat-token` flag. It is
   deliberately distinct from the management `--token`: the HQ refuses to start if the two are
-  equal. The management token is **not** accepted on `/mobile/v1`, and the mobile token is not
-  accepted on any administrative route.
+  equal. The management token is **not** accepted on `/mobile/v1` or `/mobile/v2`, and the
+  mobile token is not accepted on any administrative route.
 - The header must equal `Bearer ` followed by the token exactly. There is no trimming and no
   case folding.
 - Both token fields of a pairing payload, `mgmtToken` and `chatToken`, carry this same bearer.
@@ -83,8 +92,8 @@ Authorization: Bearer <mobile-token>
   bearer into the pairing QR code. Clients that pair through a DashSquad account receive it as
   `chatToken` from the control plane. See
   [Relay Control Plane API](/api-relay-control-plane).
-- If the HQ has a management token but no mobile token, every `/mobile/v1` route except
-  `/health` returns `401`. If it has neither, authentication is off. That only happens on a
+- If the HQ has a management token but no mobile token, every `/mobile/v1` and `/mobile/v2` route
+  except `/health` returns `401`. If it has neither, authentication is off. That only happens on a
   loopback-only gateway.
 
 A missing or wrong bearer gets:
@@ -123,25 +132,25 @@ startup:
 | `DASH_WEB_ORIGINS` set to a comma-separated list | Exactly that list. Entries are trimmed and blank entries dropped. Name the derived default yourself to keep it. |
 | `DASH_WEB_ORIGINS` set but empty | None. This is how you opt out of browser access. |
 
-When the allowlist is non-empty, the HQ applies these CORS rules to `/mobile/v1` and nothing else:
+When the allowlist is non-empty, the HQ applies these CORS rules to `/mobile/v1` and `/mobile/v2`
+and nothing else:
 
 | Rule | Value |
 |------|-------|
 | Origin matching | Exact string match. No wildcards and no subdomain matching. |
-| `Access-Control-Allow-Methods` | `GET`, `POST`, `PATCH`, `DELETE`, `OPTIONS` |
-| `Access-Control-Allow-Headers` | `Authorization`, `Content-Type`, `x-dash-relay-credential` |
+| `Access-Control-Allow-Methods` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` |
+| `Access-Control-Allow-Headers` | `Authorization`, `Content-Type`, `If-Match`, `x-dash-relay-credential` |
+| `Access-Control-Expose-Headers` | `ETag` |
 | Credentials | Never allowed. Auth is a bearer header, not cookies. |
 
 Preflight `OPTIONS` requests are answered before authentication, because browsers never attach a
 bearer to a preflight. `x-dash-relay-credential` is in the allowed headers because a browser must
 get it preflight-approved before the relay will see it.
 
-<Warning>
-`PUT` is not an allowed method and `If-Match` is not an allowed header. A browser client
-therefore cannot call `PUT /agents/:id`, `PUT /agents/:id/subagent-definitions/:name`, or the
-conditional `PATCH` and `DELETE /conversations/:id` cross-origin. `ETag` is not exposed to
-scripts either. The same `revision` is always in the response body.
-</Warning>
+A browser client can call every Mobile API route cross-origin, including `PUT /agents/:id`,
+`PUT /agents/:id/subagent-definitions/:name`, and the conditional `PATCH` and
+`DELETE /conversations/:id`. `ETag` is exposed so a script can read the revision to send back in
+`If-Match`. The same `revision` is also in the response body.
 
 ### Error envelope
 
@@ -173,7 +182,8 @@ Errors use one JSON envelope, `MobileApiError`:
 | `revision_conflict` | `409` | `If-Match` names a stale revision |
 | `conversation_busy` | `409` | The conversation has an active turn |
 | `gateway_offline` | `500` | Internal HQ error. Retryable. |
-| `rate_limited`, `capability_required` | | Reserved by the contract. No `/mobile/v1` route currently returns them. |
+| `rate_limited`, `capability_required` | | Reserved by the contract. No `/mobile/v1` or `/mobile/v2` route currently returns them. |
+| `delivery_choice_required` | | Not returned over HTTP. The v2 chat socket uses it to reject an `auto` input the HQ could not route. See [Steer and Follow Up](#how-the-queue-works). |
 | `too_large`, `too_long`, `invalid`, `provider`, `network`, `unavailable` | `413`, `400`, `502`, `503` | Speech errors, passed through from the speech provider. See [Speech](#speech). |
 
 Two families of routes return a bare `{ "error": "<message>" }` body instead of the envelope. The
@@ -198,7 +208,8 @@ body has no `code` or `retryable`, so map these by HTTP status:
 ## Route index
 
 Paths in this table and in the sections below are relative to `/mobile/v1`. For example,
-`GET /conversations` means `GET /mobile/v1/conversations`.
+`GET /conversations` means `GET /mobile/v1/conversations`. The `/mobile/v2` routes are listed in
+[Routes in v2](#routes-in-v2).
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
@@ -278,6 +289,9 @@ unauthenticated route. Call it first to check that the HQ speaks the features yo
 
 Ignore capability strings you don't recognize. A client that rejects an unknown capability breaks
 as soon as the HQ adds one.
+
+`GET /mobile/v2/health` reports the same list plus `chat-input-queue-v1` and `auto-delivery-v1`.
+See [GET /mobile/v2/health](#get-%2Fmobile%2Fv2%2Fhealth).
 
 ### GET /identity
 
@@ -1501,7 +1515,8 @@ decode JSON on this route too.
 
 Live turns, steering, Follow Up, and voice run over the chat WebSocket at `/ws/chat`, on the same
 host as the Mobile API: the LAN listener or the relay hostname. The frame protocol is documented in
-[HQ Chat WebSocket](/api-hq-chat-websocket). This section covers only connecting.
+[HQ Chat WebSocket](/api-hq-chat-websocket). The same socket serves the v2 protocol when its first
+frame is a v2 `hello`. This section covers only connecting.
 
 The socket authenticates with the same mobile bearer. The HQ checks, in order:
 
@@ -1519,7 +1534,8 @@ subprotocol. See [Relay API](/api-relay#websocket-%2Fws%2Fchat).
 
 ### POST /ws-ticket
 
-Mints a single-use ticket for one WebSocket upgrade. Takes no body.
+Mints a single-use ticket for one WebSocket upgrade. Takes no body. The same route is at
+`POST /mobile/v2/ws-ticket`.
 
 ```json
 { "ticket": "0123456789abcdef0123456789abcdef", "expiresAt": "2026-08-29T12:00:30Z" }
@@ -1546,90 +1562,547 @@ wss://<gatewayId>.<zone>/ws/chat?ticket=<ticket>
 
 ## Steer and Follow Up (Mobile API v2)
 
-<Note>
-The v2 API ships with the steer-and-follow-up release. Until that release reaches your HQ, `/mobile/v2` routes return 404 and the v1 surface described on the Mobile API page is the only one available.
-</Note>
-
+Mobile API v2 is a parallel namespace, `/mobile/v2`, for clients that support Steer and the durable
+Follow Up queue. It is served by the same listeners as v1, with the same Mobile bearer, the same
+per-device relay credential, and the same CORS rules. Administrative management bearers are not
+accepted by either mobile namespace. V1 remains available with its existing bodies, cursor, and
+pending-work commands.
 
 Current clients probe `GET /mobile/v2/health` and require the `chat-input-queue-v1` capability.
-Verify `/mobile/v2/identity` with the phone-scoped Mobile bearer before opening conversations.
-The direct mobile listener and hosted relay expose both `/mobile/v1` and `/mobile/v2`. V2 uses the
-same Mobile bearer and, through the relay, the same per-device relay credential. Administrative
-management bearers are not accepted by either mobile namespace.
+Verify `GET /mobile/v2/identity` with the Mobile bearer before opening conversations. Select v1
+only when the v2 health resource is explicitly unavailable. Do not downgrade after a rejected
+credential, wrong HQ identity, malformed response, or TLS verification failure. A Desktop local
+conversation retains its existing connection-owned behavior.
 
-V1 remains available with its existing DTOs, cursor, and pending-work commands. Select v1 only when
-the v2 health resource is explicitly unavailable. Do not downgrade after a rejected credential,
-wrong HQ identity, malformed response, or TLS verification failure. A Desktop local conversation
-retains its existing connection-owned behavior.
+### Routes in v2
 
-### Snapshot and replay
+Paths are relative to `/mobile/v2`. Every route except `GET /health` needs the Mobile bearer.
 
-Paths in this table are relative to `/mobile/v2` and require the Mobile bearer:
+| Method | Path | Body compared with v1 |
+|--------|------|-----------------------|
+| `GET` | `/health` | Same shape, with `apiVersion: 2` and two more capabilities |
+| `GET` | `/identity` | Same |
+| `GET` | `/agents` | Same |
+| `POST` | `/agents` | Same |
+| `GET` | `/agents/:id` | Same |
+| `PUT` | `/agents/:id` | Same |
+| `DELETE` | `/agents/:id` | Same |
+| `POST` | `/agents/:id/enable` | Same |
+| `POST` | `/agents/:id/disable` | Same |
+| `GET` | `/agents/:id/memory` | Same, including the bare `{ "error" }` body on `404` |
+| `GET` | `/agents/:id/memory/:name` | Same |
+| `DELETE` | `/agents/:id/memory/:name` | Same |
+| `GET` | `/models` | Same |
+| `GET` | `/conversations` | Items are v2 conversation objects |
+| `POST` | `/conversations` | Returns a v2 conversation object |
+| `GET` | `/conversations/:id` | Returns a v2 conversation object |
+| `PATCH` | `/conversations/:id` | Returns a v2 conversation object |
+| `DELETE` | `/conversations/:id` | Returns a v2 tombstone |
+| `GET` | `/conversations/:id/messages` | Items are v2 messages |
+| `GET` | `/conversations/:id/bootstrap` | New in v2 |
+| `GET` | `/agents/:agentId/conversations/:conversationId/events` | Takes `sinceV2Seq` and returns v2 frames |
+| `GET` | `/events` | Same stream |
+| `POST` | `/ws-ticket` | Same |
 
-| Route | Result |
-|-------|--------|
-| `GET /conversations/:id/bootstrap` | Canonical conversation, messages, pending inputs, queue state, and `v2ThroughSeq` |
-| `GET /conversations/:id/messages` | V2 messages with run, segment, and delivery identities; accepts `limit` and `before` |
-| `GET /agents/:agentId/conversations/:conversationId/events?sinceV2Seq=N` | `{ frames, v2ThroughSeq }` after the stored v2 cursor |
-| `GET /events` | Conversation cache invalidations over SSE |
+These v1 routes have no v2 equivalent: `/speech/*`, `/agents/:id/skills`,
+`/agents/:id/subagent-types`, `/agents/:id/subagent-definitions` and its children,
+`/conversations/:id/subagents`, `/subagents/:id/stop`, `/subagents/:id/resume`, and
+`/conversations/:id/pending`. Under `/mobile/v2` they return `404`. A v2 client calls them under
+`/mobile/v1` with the same bearer. Pending work in v2 is read from the
+[bootstrap](#get-%2Fmobile%2Fv2%2Fconversations%2F%3Aid%2Fbootstrap) instead of `/pending`.
 
-The management-auth equivalents use `/conversations/:id/bootstrap`,
-`/conversations/:id/messages-v2`, and
-`/agents/:agentId/conversations/:conversationId/events-v2?sinceV2Seq=N` on the loopback management
-server. The older unprefixed message and event routes keep their v1 format.
+### How the queue works
 
-V2's `v2Seq` and v1's `seq` are independent, dense sequences. Never send `sinceSeq` to the v2 replay
-route or infer a v2 cursor from a v1 frame. Store a v2 cursor only after applying its frame. On
-compaction, read a fresh bootstrap and preserve already loaded history by canonical message ID.
+A conversation has at most one active **run**. `message` starts a run when the conversation is
+idle. While a run is active, a client sends `enqueue_input` instead, with one of three behaviors:
 
-### Subscribe before sending
+- **Steer** (`steer`) guides the active run. It must name that run as `expectedActiveTurnId`, and
+  it cannot silently target a different run. A Steer is delivered only at a safe agent boundary.
+  Each delivered Steer starts a new assistant **segment** inside the same outer run. Its permanent
+  user row records `deliveryStatus` `pending`, `delivered`, or `not_delivered`. A Steer that the
+  run ends before delivering becomes `not_delivered`; it never becomes a future Follow Up.
+- **Follow Up** (`followUp`) queues a later run. Follow Ups run in order, one at a time. A Follow
+  Up sent to an idle conversation starts at once, unless the queue is paused.
+- **Auto** (`auto`) lets the HQ choose between Steer and Follow Up. The HQ advertises it as
+  `auto-delivery-v1`. Like Steer, it must name the active run as `expectedActiveTurnId`. If that
+  run has already ended, the input becomes a Follow Up. If the HQ's router is set to ask, has no
+  credential, times out, or is unsure, the command is rejected with `delivery_choice_required`,
+  and the client asks the user to choose. The router is configured on the loopback
+  [Management API](/api-reference#message-routing).
 
-Connect to `/ws/chat` using the existing authenticated native socket or a single-use ticket. The
-first frame selects v2:
+A run that fails pauses the remaining Follow Ups. While the queue is paused, a v2 `message` is
+rejected until a client sends `resume_follow_ups`. Cancelling a run with v2 `cancel` does not pause the queue: the next Follow Up
+starts. Disabling the agent also pauses each non-empty queue. The v1 compatibility command
+`stop_conversation` keeps its older stop-and-pause behavior, and `interrupt_and_send` keeps
+priority interruption. Both APIs use the same queue.
+
+A conversation holds at most 20 pending Follow Ups and 20 pending Steers, with a combined pending
+payload of at most 100 MiB. Each input carries up to four JPEG, PNG, GIF, or WebP images: 5 MiB per
+image and 12 MiB combined after decoding. Sending or editing beyond these limits is rejected.
+
+V2 frames carry a conversation-wide `v2Seq`. It is independent of v1's `seq`. Never send `sinceSeq`
+to the v2 replay route or infer a v2 cursor from a v1 frame. Store a v2 cursor only after applying
+its frame. After compaction, read a fresh bootstrap and keep already loaded history by message ID.
+
+### The v2 conversation object
+
+The v2 conversation object is the [v1 conversation object](#the-conversation-object) without
+`pendingCount` and `pendingScheduling`, plus four queue fields:
 
 ```json
-{"type":"hello","contractVersion":2,"capabilities":["chat-input-queue-v1"]}
+{
+  "id": "00000000-0000-4000-8000-000000000001",
+  "agentId": "agent-01",
+  "agentName": "Mobile Helper",
+  "title": "Queue contract check",
+  "revision": 4,
+  "status": "running",
+  "activeTurnId": "00000000-0000-4000-8000-000000000003",
+  "owningIssueId": null,
+  "projectId": null,
+  "lastSeq": 7,
+  "lastMessagePreview": "Working on the first segment.",
+  "createdAt": "2026-09-06T09:00:00.000Z",
+  "updatedAt": "2026-09-06T09:12:00.000Z",
+  "kind": "user",
+  "queuePaused": false,
+  "queueRevision": 3,
+  "pendingFollowUpCount": 2,
+  "v2LastSeq": 12
+}
 ```
 
-Wait for `hello_ack`, then subscribe from the bootstrap's watermark:
+| Field | Type | Description |
+|-------|------|-------------|
+| `queuePaused` | `boolean` | Whether queued Follow Ups are held until `resume_follow_ups` |
+| `queueRevision` | `integer` | Increases on every queue change. Send it as `expectedQueueRevision` |
+| `pendingFollowUpCount` | `integer` | Follow Ups waiting to run |
+| `v2LastSeq` | `integer` | The conversation's latest `v2Seq` |
+
+`queueRevision` also appears in v1, but v1 has no `queuePaused`, `pendingFollowUpCount`, or
+`v2LastSeq`. `lastSeq` is still the v1 event-log sequence.
+
+### The v2 message object
+
+A v2 message is the v1 message with its place in a run:
 
 ```json
-{"type":"subscribe_conversation","id":"00000000-0000-4000-8000-000000000002","agentId":"agent-01","conversationId":"00000000-0000-4000-8000-000000000001","sinceV2Seq":0}
+{
+  "id": "00000000-0000-4000-8000-000000000112",
+  "conversationId": "00000000-0000-4000-8000-000000000101",
+  "turnId": "00000000-0000-4000-8000-000000000121",
+  "ordinal": 2,
+  "role": "user",
+  "status": "accepted",
+  "content": { "type": "user", "text": "Steer here." },
+  "createdAt": "2026-09-06T09:02:00.000Z",
+  "updatedAt": "2026-09-06T09:02:00.000Z",
+  "runId": "turn-01",
+  "segmentIndex": 1,
+  "deliveryKind": "steer",
+  "deliveryStatus": "pending"
+}
 ```
 
-`conversation_subscribed` includes the replay watermark. The subscription lasts across runs; a
-terminal frame does not close it. Reconnect with the last applied `v2Seq`. A socket that has not
-negotiated v2 retains the v1 protocol. Malformed negotiation or protocol frames close with `1002`;
-application command rejection uses `command_rejected` without closing a healthy subscription.
+| Field | Type | Description |
+|-------|------|-------------|
+| `runId` | `string` | The outer run this message belongs to |
+| `segmentIndex` | `integer` | `0` for the run's first segment. Each delivered Steer adds one |
+| `deliveryKind` | `string` | `normal`, `steer`, or `follow_up` |
+| `deliveryStatus` | `string` | Optional. `pending`, `delivered`, or `not_delivered` |
+| `routedBy` | `"auto"` | Optional. Present only when the HQ chose the delivery for an `auto` input |
 
-### Commands and durable acknowledgements
+`turnId` is the segment's own turn ID. For a Steer segment it differs from `runId`.
 
-Every command has a client-generated `id`. An enqueued input also has a distinct `inputId`. Reuse
-both identities and exactly the same payload when retrying an uncertain command. Reusing an ID for
-a different payload is rejected. A normal `message.id` remains the outer run identity.
+### The pending input object
 
-| Command | Required correlation | Behavior |
-|---------|----------------------|----------|
-| `message` | Agent, channel, conversation, text, `resumable: true` | Start a run when the conversation is available |
-| `enqueue_input` | Agent, channel, conversation, `inputId`, text, `behavior` | `steer` guides the active run; `followUp` queues a later run |
-| `edit_follow_up` | Conversation, input, `expectedRevision`, text | Update an item that has not started; images replace its attachment set |
-| `remove_follow_up` | Conversation, input, `expectedRevision` | Remove a queued item |
-| `resume_follow_ups` | Conversation, `expectedQueueRevision` | Resume a paused queue |
-| `cancel` | `id` of the exact active run | Stop that run and advance remaining v2 Follow Ups |
+Bootstrap and the `input_*` WebSocket frames describe queued work with this object:
 
-Steer additionally requires `expectedActiveTurnId`. It cannot silently target a different run.
-A successful enqueue emits `input_accepted`; edits and removals emit `input_updated` and
-`input_removed`. `input_delivered` links the accepted input to its run, segment, and message IDs.
-`queue_paused` and `queue_resumed` publish queue state. Rejections preserve the submitted draft;
-a stale item revision requires a refresh before another edit or removal.
+```json
+{
+  "inputId": "00000000-0000-4000-8000-000000000022",
+  "kind": "steer",
+  "targetTurnId": "00000000-0000-4000-8000-000000000003",
+  "text": "Use the updated constraint.",
+  "state": "queued",
+  "revision": 0,
+  "enqueueOrder": 1,
+  "createdAt": "2026-09-06T09:06:00.000Z",
+  "updatedAt": "2026-09-06T09:06:00.000Z"
+}
+```
 
-A Steer is delivered only at a safe agent boundary. Its permanent user row records `pending`,
-`delivered`, or `not_delivered`; delivered rows are labeled **Steered**. Each delivered Steer starts
-a new assistant segment inside the same outer run. A late Steer never becomes a future Follow Up.
-Follow Ups run in order, one at a time. Failure pauses the remaining queue until **Resume Follow
-Ups**. The v1 compatibility command `stop_conversation` retains its older Stop-pauses behavior, and
-`interrupt_and_send` retains priority interruption; v2 `cancel` advances the queue.
+| Field | Type | Description |
+|-------|------|-------------|
+| `inputId` | `string` | Client-generated UUID from `enqueue_input` |
+| `kind` | `string` | `steer` or `follow_up` |
+| `routedBy` | `"auto"` | Optional. The HQ chose `kind` for an `auto` input |
+| `targetTurnId` | `string` | Optional. The run a Steer targets |
+| `text` | `string` | Message text |
+| `images` | `array` | Optional. Up to four images |
+| `state` | `string` | `queued`, `delivering`, `delivered`, `removed`, or `failed` |
+| `revision` | `integer` | Starts at `0` and increases on each change. Send it as `expectedRevision` |
+| `enqueueOrder` | `integer` | Position in the conversation's queue |
+| `runId`, `segmentTurnId`, `userMessageId`, `assistantMessageId` | `string` | Optional. Set once the input is delivered |
+| `failureCode`, `failureMessage` | `string` | Optional. Why the input failed |
+| `createdAt`, `updatedAt` | `string` | ISO 8601 times |
+| `deliveredAt` | `string` | Optional. When the input was delivered |
 
-V2 permits 20 pending Follow Ups and 20 pending Steers per conversation, with a combined pending
-payload limit of 100 MiB. Each input accepts up to four JPEG, PNG, GIF, or WebP images: 5 MiB per
-image and 12 MiB combined decoded image data. Sending or editing beyond these limits is rejected.
+### GET /mobile/v2/health
+
+The v1 [health](#get-%2Fhealth) body with `apiVersion: 2`. The capabilities are v1's, plus
+`chat-input-queue-v1` and `auto-delivery-v1`. No authentication is required.
+
+```json
+{
+  "status": "healthy",
+  "startedAt": "2026-09-06T09:00:00.000Z",
+  "pid": 4242,
+  "agents": 1,
+  "channels": 1,
+  "apiVersion": 2,
+  "capabilities": ["conversation-sync-v1", "chat-resume-v1", "conversation-control-v2", "speech-v1", "chat-input-queue-v1", "auto-delivery-v1"]
+}
+```
+
+`speech-v1` follows the same rule as in v1, even though the speech routes are only under
+`/mobile/v1`.
+
+### GET /mobile/v2/identity
+
+Same handler and body as v1 [`GET /identity`](#get-%2Fidentity).
+
+### GET /mobile/v2/agents
+
+Same handler and body as v1. See [Agents](#agents).
+
+### POST /mobile/v2/agents
+
+Same handler and body as v1. Only `name`, `model`, and `systemPrompt` are accepted.
+
+### GET /mobile/v2/agents/:id
+
+Same handler and body as v1.
+
+### PUT /mobile/v2/agents/:id
+
+Same handler and body as v1. Only `model` and `systemPrompt` are accepted.
+
+### DELETE /mobile/v2/agents/:id
+
+Same handler and body as v1.
+
+### POST /mobile/v2/agents/:id/enable
+
+Same handler and body as v1.
+
+### POST /mobile/v2/agents/:id/disable
+
+Same handler and body as v1. Disabling an agent also pauses each of its conversations that has
+queued Follow Ups.
+
+### GET /mobile/v2/agents/:id/memory
+
+Same handler and body as v1. See [Memory](#memory). A `404` has the bare `{ "error" }` body, not
+the envelope.
+
+### GET /mobile/v2/agents/:id/memory/:name
+
+Same handler and body as v1.
+
+### DELETE /mobile/v2/agents/:id/memory/:name
+
+Same handler and body as v1.
+
+### GET /mobile/v2/models
+
+Same read-only handler and body as v1. See [Models](#models).
+
+### GET /mobile/v2/conversations
+
+Same query parameters and rules as v1 [`GET /conversations`](#get-%2Fconversations): `agentId`,
+`limit` (`1` to `100`, default `50`), and `cursor`. Items are
+[v2 conversation objects](#the-v2-conversation-object).
+
+```json
+{
+  "items": [
+    {
+      "id": "00000000-0000-4000-8000-000000000101",
+      "agentId": "agent-01",
+      "agentName": "Mobile Helper",
+      "title": "Paged conversation",
+      "revision": 7,
+      "status": "running",
+      "activeTurnId": "turn-01",
+      "owningIssueId": "issue-01",
+      "projectId": "project-01",
+      "lastSeq": 5,
+      "lastMessagePreview": "A non-default page fixture.",
+      "createdAt": "2026-09-06T09:00:00.000Z",
+      "updatedAt": "2026-09-06T09:12:00.000Z",
+      "kind": "user",
+      "queuePaused": true,
+      "queueRevision": 4,
+      "pendingFollowUpCount": 2,
+      "v2LastSeq": 8
+    }
+  ],
+  "nextCursor": "eyJ2IjoxLCJ1cGRhdGVkQXQiOiIyMDI2LTA5LTA2VDA5OjEyOjAwLjAwMFoiLCJpZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDEwMSJ9"
+}
+```
+
+**Errors:** `400`, `401`.
+
+### POST /mobile/v2/conversations
+
+Same request body, `requestId` idempotency, and errors as v1
+[`POST /conversations`](#post-%2Fconversations). Returns `201` with a v2 conversation object and
+its `ETag`, and sends `conversation:changed` on `/events`.
+
+### GET /mobile/v2/conversations/:id
+
+Returns the v2 conversation object and its `ETag`. Deleted conversations are returned as
+tombstones.
+
+**Errors:** `401`, `404`.
+
+### PATCH /mobile/v2/conversations/:id
+
+Same body, `If-Match` rules, and errors as v1
+[`PATCH /conversations/:id`](#patch-%2Fconversations%2F%3Aid). Returns the updated v2 conversation
+object and its new `ETag`. On `409` `revision_conflict`, `details.current` is a v2 conversation
+object.
+
+### DELETE /mobile/v2/conversations/:id
+
+Same `If-Match` rules and error order as v1
+[`DELETE /conversations/:id`](#delete-%2Fconversations%2F%3Aid). Returns the v2 tombstone and its
+new `ETag`, and sends `conversation:deleted` on `/events`.
+
+### GET /mobile/v2/conversations/:id/messages
+
+Pages through stored messages exactly like v1 [`GET /conversations/:id/messages`](#get-%2Fconversations%2F%3Aid%2Fmessages):
+`limit` (`1` to `200`, default `100`) and `before`. Items are
+[v2 messages](#the-v2-message-object).
+
+```json
+{
+  "items": [
+    {
+      "id": "00000000-0000-4000-8000-000000000111",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "turnId": "turn-01",
+      "ordinal": 1,
+      "role": "user",
+      "status": "completed",
+      "content": { "type": "user", "text": "Start the run." },
+      "createdAt": "2026-09-06T09:01:00.000Z",
+      "updatedAt": "2026-09-06T09:01:00.000Z",
+      "runId": "turn-01",
+      "segmentIndex": 0,
+      "deliveryKind": "normal"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000113",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "turnId": "00000000-0000-4000-8000-000000000122",
+      "ordinal": 3,
+      "role": "user",
+      "status": "completed",
+      "content": { "type": "user", "text": "Follow this up." },
+      "createdAt": "2026-09-06T09:03:00.000Z",
+      "updatedAt": "2026-09-06T09:04:00.000Z",
+      "runId": "00000000-0000-4000-8000-000000000122",
+      "segmentIndex": 0,
+      "deliveryKind": "follow_up",
+      "deliveryStatus": "delivered"
+    }
+  ],
+  "nextCursor": null,
+  "throughSeq": 5
+}
+```
+
+`throughSeq` is the conversation's v1 `lastSeq`, not a v2 cursor. Use the bootstrap's
+`v2ThroughSeq` to subscribe or replay.
+
+**Errors:** `400`, `401`, `404`.
+
+### GET /mobile/v2/conversations/:id/bootstrap
+
+Returns one consistent snapshot of a conversation: the v2 conversation object, a page of messages,
+the pending inputs, the queue state, and the v2 replay watermark. Read it before you subscribe.
+
+| Query parameter | Type | Description |
+|-----------------|------|-------------|
+| `limit` | `integer` | Optional. Messages per page, `1` to `200`, default `100` |
+| `before` | `string` | Optional. `nextCursor` from a previous page |
+
+```json
+{
+  "conversation": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "agentId": "agent-01",
+    "agentName": "Mobile Helper",
+    "title": "Queue contract check",
+    "revision": 4,
+    "status": "running",
+    "activeTurnId": "00000000-0000-4000-8000-000000000003",
+    "owningIssueId": null,
+    "projectId": null,
+    "lastSeq": 7,
+    "lastMessagePreview": "Working on the first segment.",
+    "createdAt": "2026-09-06T09:00:00.000Z",
+    "updatedAt": "2026-09-06T09:12:00.000Z",
+    "kind": "user",
+    "queuePaused": false,
+    "queueRevision": 3,
+    "pendingFollowUpCount": 2,
+    "v2LastSeq": 12
+  },
+  "messages": [
+    {
+      "id": "00000000-0000-4000-8000-000000000013",
+      "conversationId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "ordinal": 1,
+      "role": "user",
+      "status": "completed",
+      "content": { "type": "user", "text": "Publish the v2 contract." },
+      "createdAt": "2026-09-06T09:01:00.000Z",
+      "updatedAt": "2026-09-06T09:01:00.000Z",
+      "runId": "00000000-0000-4000-8000-000000000003",
+      "segmentIndex": 0,
+      "deliveryKind": "normal"
+    }
+  ],
+  "nextCursor": null,
+  "pendingInputs": [
+    {
+      "inputId": "00000000-0000-4000-8000-000000000022",
+      "kind": "steer",
+      "targetTurnId": "00000000-0000-4000-8000-000000000003",
+      "text": "Use the updated constraint.",
+      "state": "queued",
+      "revision": 0,
+      "enqueueOrder": 1,
+      "createdAt": "2026-09-06T09:06:00.000Z",
+      "updatedAt": "2026-09-06T09:06:00.000Z"
+    },
+    {
+      "inputId": "00000000-0000-4000-8000-000000000024",
+      "kind": "follow_up",
+      "text": "Then summarize the result.",
+      "state": "queued",
+      "revision": 1,
+      "enqueueOrder": 2,
+      "createdAt": "2026-09-06T09:07:00.000Z",
+      "updatedAt": "2026-09-06T09:08:00.000Z"
+    }
+  ],
+  "queuePaused": false,
+  "queueRevision": 3,
+  "v2ThroughSeq": 12
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `conversation` | `object` | The [v2 conversation object](#the-v2-conversation-object) |
+| `messages` | `array` | A page of [v2 messages](#the-v2-message-object), oldest first |
+| `nextCursor` | `string` or `null` | Pass as `before` for older messages |
+| `pendingInputs` | `array` | Queued Steers, plus Follow Ups that are queued or delivering, in queue order. See [the pending input object](#the-pending-input-object) |
+| `queuePaused`, `queueRevision` | | The queue state, as on the conversation |
+| `v2ThroughSeq` | `integer` | The latest `v2Seq` covered by this snapshot. Subscribe with it as `sinceV2Seq` |
+
+The query parameter rules match the v1 list routes. **Errors:** `400`, `401`, `404`. A deleted
+conversation returns `404`.
+
+### GET /mobile/v2/agents/:agentId/conversations/:conversationId/events
+
+Returns the conversation's v2 frames with `v2Seq` greater than `sinceV2Seq`, in order.
+
+| Query parameter | Type | Description |
+|-----------------|------|-------------|
+| `sinceV2Seq` | `integer` | **Required.** A non-negative safe integer. It is the only query parameter accepted |
+
+```json
+{
+  "frames": [
+    {
+      "type": "accepted",
+      "id": "turn-01",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "runId": "turn-01",
+      "segmentTurnId": "turn-01",
+      "v2Seq": 8,
+      "userMessageId": "00000000-0000-4000-8000-000000000111",
+      "assistantMessageId": "00000000-0000-4000-8000-000000000114",
+      "revision": 3
+    },
+    {
+      "type": "input_accepted",
+      "id": "00000000-0000-4000-8000-000000000115",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "v2Seq": 9,
+      "queueRevision": 4,
+      "input": {
+        "inputId": "00000000-0000-4000-8000-000000000116",
+        "kind": "follow_up",
+        "text": "Follow this up.",
+        "state": "queued",
+        "revision": 0,
+        "enqueueOrder": 2,
+        "createdAt": "2026-09-06T09:03:00.000Z",
+        "updatedAt": "2026-09-06T09:03:00.000Z"
+      }
+    },
+    {
+      "type": "event",
+      "id": "turn-01",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "runId": "turn-01",
+      "segmentTurnId": "turn-01",
+      "v2Seq": 10,
+      "event": { "type": "text_delta", "text": "Working." }
+    }
+  ],
+  "v2ThroughSeq": 10
+}
+```
+
+`frames` holds the sequenced frames documented in
+[HQ Chat WebSocket](/api-hq-chat-websocket#sequenced-frames). `v2ThroughSeq` is the conversation's
+latest `v2Seq`. A missing, repeated, or non-integer `sinceV2Seq`, or any other query parameter,
+returns `400` `validation_failed`. An unknown conversation, or one owned by a different agent,
+returns `404` `not_found`.
+
+### GET /mobile/v2/events
+
+The same Server-Sent Events stream as v1 [`GET /events`](#get-%2Fevents), from the same handler.
+
+### POST /mobile/v2/ws-ticket
+
+Same as v1 [`POST /ws-ticket`](#post-%2Fws-ticket). Tickets come from the one HQ-wide store, so a
+ticket minted here works on any `/ws/chat` listener.
+
+### Loopback aliases
+
+Mission Control reads the same v2 data on the loopback management server with the management
+bearer. These paths don't collide with the v1 routes that share the unprefixed namespace:
+
+| Loopback path | Same as |
+|---------------|---------|
+| `GET /conversations/:id/bootstrap` | `GET /mobile/v2/conversations/:id/bootstrap` |
+| `GET /conversations/:id/messages-v2` | `GET /mobile/v2/conversations/:id/messages` |
+| `GET /agents/:agentId/conversations/:conversationId/events-v2` | `GET /mobile/v2/agents/:agentId/conversations/:conversationId/events` |
+
+The unprefixed `/conversations` routes and the unprefixed `/events` replay keep their v1 format.
+
+### Live chat on v2
+
+Live runs, Steer, and Follow Up use the same `/ws/chat` socket as v1. A client selects v2 by
+sending `hello` with `contractVersion: 2` as the socket's first frame, subscribes to one
+conversation with `subscribe_conversation`, and then sends commands. The frames are documented in
+[HQ Chat WebSocket: Mobile API v2 protocol](/api-hq-chat-websocket#mobile-api-v2-protocol).

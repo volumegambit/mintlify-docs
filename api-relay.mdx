@@ -22,7 +22,7 @@ Everything else, including the HQ's own Mobile bearer, is forwarded to the HQ.
 
 | Caller | Surface | Authenticates with |
 |--------|---------|--------------------|
-| Device (iOS, Android, web) | `/mobile/v1` HTTP and `/ws/chat` WebSocket on `<gatewayId>.<zone>` | Pairing credential, plus the HQ's Mobile bearer (checked by the HQ) |
+| Device (iOS, Android, web) | `/mobile/v1` and `/mobile/v2` HTTP and `/ws/chat` WebSocket on `<gatewayId>.<zone>` | Pairing credential, plus the HQ's Mobile bearer (checked by the HQ) |
 | HQ | `/gw/<gatewayId>` WebSocket | Shared relay token, or a signed dial token plus a holder-of-key proof |
 | Control plane or operator | `/admin/*` HTTP | Admin secret |
 
@@ -58,8 +58,8 @@ newly provisioned credential. The hosted store survives restarts and keeps only 
 
 | Method | Path | Caller | Auth | Purpose |
 |--------|------|--------|------|---------|
-| Any | `/mobile/v1` and `/mobile/v1/*` on `<gatewayId>.<zone>` | Device | Pairing credential | Forwarded to the HQ management server |
-| `OPTIONS` | `/mobile/v1` and `/mobile/v1/*` on `<gatewayId>.<zone>` | Browser | None | CORS preflight, forwarded to the HQ |
+| Any | `/mobile/v1`, `/mobile/v2`, and the paths below them on `<gatewayId>.<zone>` | Device | Pairing credential | Forwarded to the HQ management server |
+| `OPTIONS` | `/mobile/v1`, `/mobile/v2`, and the paths below them on `<gatewayId>.<zone>` | Browser | None | CORS preflight, forwarded to the HQ |
 | `GET` (WebSocket) | `/ws/chat` on `<gatewayId>.<zone>` | Device | Pairing credential | Bridged to the HQ chat server |
 | `GET` (WebSocket) | `/gw/:gatewayId` | HQ | Relay token, or dial token and proof | Registers the HQ's tunnel |
 | `POST` | `/admin/pairings` | Control plane | Admin secret | Provision a pairing credential |
@@ -83,26 +83,28 @@ reaches the relay.
 
 Only two targets are forwarded:
 
-- **HTTP:** `/mobile/v1`, or any path beginning with `/mobile/v1/`. This covers REST and the SSE
-  `GET /mobile/v1/events` stream. The query string is forwarded unchanged.
+- **HTTP:** `/mobile/v1` or `/mobile/v2`, or any path beginning with `/mobile/v1/` or
+  `/mobile/v2/`. This covers REST and the SSE `GET /mobile/v1/events` and `GET /mobile/v2/events`
+  streams. The query string is forwarded unchanged.
 - **WebSocket:** exactly `/ws/chat`, with any query string.
 
-Other paths, including `/mobile/v2`, the HQ's unprefixed administrative routes, and `/health`,
-return `404` without contacting the HQ. The relay also rejects a path that is not canonical:
+Other paths, including the HQ's unprefixed administrative routes and `/health`, return `404`
+without contacting the HQ. The relay also rejects a path that is not canonical:
 
 - The target must start with `/` and contain no `#`.
 - URL normalization must leave the path unchanged, so literal or encoded `.` and `..` segments
   are refused.
-- Repeated percent-decoding must never produce a backslash or a `.`/`..` segment. A path that
-  still changes after five rounds of decoding is also refused.
+- Repeated percent-decoding must never add a `/` or `\` separator, so encoded separators such as
+  `%2F` and `%5C` are refused, and must never produce a `.`/`..` segment. A path that still
+  changes after five rounds of decoding is also refused.
 
 ### Request processing order
 
-Each HTTP request to `/mobile/v1` passes these checks in order. The first failure is returned.
+Each HTTP request to `/mobile/v1` or `/mobile/v2` passes these checks in order. The first failure is returned.
 
 | Step | Check | Failure |
 |------|-------|---------|
-| 1 | Canonical `/mobile/v1` path | `404` `Not Found` |
+| 1 | Canonical `/mobile/v1` or `/mobile/v2` path | `404` `Not Found` |
 | 2 | An HQ is registered for the `Host` label | `502` `No HQ connected` |
 | 3 | Valid pairing credential (skipped for `OPTIONS`) | `401` `Unauthorized` |
 | 4 | Per-HQ rate limit and concurrent-stream cap | `429` `Too Many Requests`, with `Retry-After: 1` |
@@ -163,19 +165,20 @@ Upgrade failures:
 | Credential revoked while connected | Close `4401` `Revoked` |
 | HQ tunnel drops | Close `1000` |
 
-The relay passes the HQ's close code to the device when it is `1000` or in the range `3000`–`4999`,
-for example the HQ's `4001`. Any other code becomes `1000`. Close reasons are truncated to 123
+The relay passes the HQ's close code to the device when it is `1000`, `1002`, or in the range
+`3000`–`4999`, for example the HQ's `4001`, or the `1002` the HQ sends for a chat protocol error.
+Any other code, including the HQ's `1012` on shutdown, becomes `1000`. Close reasons are truncated to 123
 bytes. Text and binary messages keep their type in both directions.
 
 ### CORS
 
 A browser strips custom headers from a CORS preflight, so an `OPTIONS` request to a canonical
-`/mobile/v1` path is forwarded **without** a pairing credential. The HQ answers it from its own
+`/mobile/v1` or `/mobile/v2` path is forwarded **without** a pairing credential. The HQ answers it from its own
 origin allowlist. The relay never sets CORS policy for data responses. `OPTIONS` on any other path
 returns `404` and is not forwarded.
 
 When the request carries an `Origin` header, the relay adds these headers to its own `401`, `429`,
-and `502` responses on `/mobile/v1`:
+and `502` responses on `/mobile/v1` and `/mobile/v2`:
 
 ```text
 Access-Control-Allow-Origin: <request Origin>
@@ -183,9 +186,9 @@ Vary: Origin
 ```
 
 These headers let a browser read the status. For example, a revoked credential then shows as
-`401` instead of a network failure. `Access-Control-Allow-Credentials` is never set. The `404` for
-an unknown path gets no CORS headers, and neither does a `502` caused by the tunnel closing
-mid-request.
+`401` instead of a network failure. `Access-Control-Allow-Credentials` is never set. The same
+headers are on the `502` the relay sends when the tunnel closes before the HQ responded. The `404`
+for an unknown path gets no CORS headers.
 
 ### Rate limits
 
@@ -194,8 +197,8 @@ command line or environment.
 
 | Limit | Default | Applies to |
 |-------|---------|------------|
-| Authenticated request rate | 50 per second, burst 100 (token bucket) | `/mobile/v1` HTTP requests and `/ws/chat` upgrades |
-| Preflight rate | 5 per second, burst 10 (separate token bucket) | Credential-less `OPTIONS` on `/mobile/v1` |
+| Authenticated request rate | 50 per second, burst 100 (token bucket) | `/mobile/v1` and `/mobile/v2` HTTP requests and `/ws/chat` upgrades |
+| Preflight rate | 5 per second, burst 10 (separate token bucket) | Credential-less `OPTIONS` on `/mobile/v1` and `/mobile/v2` |
 | Concurrent streams | 256 | All open HTTP, SSE, and WebSocket streams for one HQ |
 
 The two buckets are independent, so preflight floods cannot use up the authenticated budget.
@@ -205,11 +208,11 @@ Both buckets reset when the HQ's tunnel closes.
 
 | Status or close code | Body or reason | Meaning |
 |----------------------|----------------|---------|
-| HTTP `404` | `Not Found` | Path is not a canonical `/mobile/v1` target |
+| HTTP `404` | `Not Found` | Path is not a canonical `/mobile/v1` or `/mobile/v2` target |
 | HTTP `502` | `No HQ connected` | No HQ is registered for the `Host` label |
 | HTTP `401` | `Unauthorized` | Missing, invalid, or revoked pairing credential |
 | HTTP `429` | `Too Many Requests` | Rate limit or stream cap reached; retry after 1 second |
-| HTTP `502` | Upstream reason, or `Upstream closed` | The HQ closed the stream before sending a response |
+| HTTP `502` | `Upstream closed` | The HQ closed the stream before sending a response |
 | WS `4401` | `Unauthorized` or `Revoked` | Invalid or revoked pairing credential |
 | WS `4429` | `Too Many Requests` | Rate limit or stream cap reached |
 
@@ -322,7 +325,7 @@ and increases by one for each device request or WebSocket.
 
 | Field | Values | Meaning |
 |-------|--------|---------|
-| `target` | `mgmt` \| `chat` | `mgmt` for all `/mobile/v1` HTTP, `chat` for `/ws/chat` |
+| `target` | `mgmt` \| `chat` | `mgmt` for all `/mobile/v1` and `/mobile/v2` HTTP, `chat` for `/ws/chat` |
 | `kind` | `http` \| `ws` | Plain HTTP (including SSE) or a WebSocket |
 | `method` | HTTP method | Present for `http` streams |
 | `path` | Request target | The original path and query string, for example `/mobile/v1/agents?cursor=next` |
@@ -360,7 +363,7 @@ The relay upgrades the device before the HQ answers. Device messages that arrive
 HQ's loopback socket opens are queued by the HQ and delivered in order. `binary` preserves the
 message type: the HQ chat server accepts only text messages. When the loopback socket closes, the
 HQ sends `close` with its code and reason, and the relay closes the device socket as described in
-[WebSocket /ws/chat](#websocket-ws-chat).
+[WebSocket /ws/chat](#websocket-%2Fws%2Fchat).
 
 ### Flow control
 

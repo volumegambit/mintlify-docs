@@ -1,6 +1,6 @@
 ---
 title: "HQ Chat WebSocket"
-description: "Wire reference for the HQ's chat WebSocket: resumable turns, pending work, hands-free voice, browser live view, and the projects event socket."
+description: "Wire reference for the HQ's chat WebSocket: resumable turns, pending work, the Mobile API v2 Steer and Follow Up protocol, hands-free voice, browser live view, and the projects event socket."
 ---
 
 Every chat client talks to an HQ over one WebSocket at `/ws/chat`. The socket carries JSON text
@@ -23,8 +23,11 @@ behaves exactly like a loopback one. The mobile listener exists only when the HQ
 both a management token and a chat token.
 
 The phone's "Mobile bearer" and Desktop's "chat token" are the same secret. The HQ accepts one
-chat token (`--chat-token`) on every `/ws/chat` listener and under `/mobile/v1` over HTTP. The
-administrative management token is never accepted on `/ws/chat`.
+chat token (`--chat-token`) on every `/ws/chat` listener and under `/mobile/v1` and `/mobile/v2`
+over HTTP. The administrative management token is never accepted on `/ws/chat`.
+
+The socket speaks two protocols. A socket stays on the v1 protocol documented in most of this page
+unless its first frame is a v2 `hello`. See [Mobile API v2 protocol](#mobile-api-v2-protocol).
 
 ## Authentication
 
@@ -66,6 +69,8 @@ Authorization: Bearer <your-chat-token>
 {"ticket":"0123456789abcdef0123456789abcdef","expiresAt":"2026-08-29T12:00:30Z"}
 ```
 
+`POST /mobile/v2/ws-ticket` is the same route and draws on the same ticket store.
+
 Then it connects with `wss://<host>/ws/chat?ticket=<ticket>`. A ticket:
 
 - Expires 30 seconds after it is minted.
@@ -74,12 +79,28 @@ Then it connects with `wss://<host>/ws/chat?ticket=<ticket>`. A ticket:
   whole HQ.
 - Is ignored, and left unredeemed, when the upgrade also carries an `Authorization` header.
 
-See [HQ Mobile API](/api-hq-mobile) for the rest of the `/mobile/v1` surface.
+See [HQ Mobile API](/api-hq-mobile) for the rest of the `/mobile/v1` and `/mobile/v2` surface.
 
 ## Versioning and capabilities
 
-The socket has no in-band handshake or version frame. A client learns what the HQ supports from
-`GET /mobile/v1/health` (or `GET /health` on loopback) before it opens the socket:
+The v1 protocol has no in-band handshake. A client learns what the HQ supports from
+`GET /mobile/v1/health` (or `GET /health` on loopback) before it opens the socket. The v2 protocol
+starts with a `hello` frame; see [Negotiation](#negotiation).
+
+The socket's first frame fixes its protocol for the rest of its life:
+
+| First frame | Result |
+|-------------|--------|
+| `hello` with `contractVersion: 2` and a valid body | The socket speaks v2. The HQ answers `hello_ack` |
+| `hello` with any other `contractVersion` | Close `1002` `unsupported_version` |
+| A v2-only command: `subscribe_conversation`, `enqueue_input`, `edit_follow_up`, `remove_follow_up`, or `resume_follow_ups` | Close `1002` `hello_required` |
+| Anything else, including invalid JSON | The socket speaks v1 |
+
+A `hello` on a socket that already chose a protocol closes it with `1002` `unexpected_hello`. A v1
+socket can't be upgraded to v2. After v1 is chosen, a v2-only command is just an unknown frame and
+gets the ordinary v1 `validation_failed` error.
+
+Capabilities that apply to the v1 protocol:
 
 | Capability | What it enables on this socket |
 |------------|--------------------------------|
@@ -87,6 +108,9 @@ The socket has no in-band handshake or version frame. A client learns what the H
 | `conversation-sync-v1` | HTTP conversation sync. Not used by the socket itself |
 | `conversation-control-v2` | Pending work: `watch`, `follow_up`, `interrupt_and_send`, `stop_conversation`, `resume_pending`, `edit_pending`, `remove_pending` |
 | `speech-v1` | [Voice mode](#voice-mode). Advertised only while a speech provider is available |
+
+`GET /mobile/v2/health` also lists `chat-input-queue-v1` and `auto-delivery-v1`. They apply to the
+v2 protocol and are negotiated in [`hello`](#hello).
 
 No capability advertises the [browser live view](#browser-live-view). A client sends
 `browser_view_start` and handles `browser_view_error` with `code: "unavailable"`.
@@ -102,8 +126,9 @@ Compatibility rules:
   recognize, so newer HQs remain compatible.
 - **Unknown enum values.** Clients decode `voice_state.state`, `voice_stopped.reason`, and the
   `browser_view_*` enums leniently, so a new value does not break the socket.
-- **Unknown client frames.** The HQ answers any frame it cannot parse with an `error` frame,
-  code `validation_failed`, and keeps the socket open. See [Errors](#errors-and-close-codes).
+- **Unknown client frames.** On a v1 socket, the HQ answers any frame it cannot parse with an
+  `error` frame, code `validation_failed`, and keeps the socket open. A v2 socket is stricter. See
+  [Errors](#errors-and-close-codes).
 
 ## Connection lifecycle
 
@@ -1141,6 +1166,429 @@ replayed.
 
 A sub-agent's browser is not announced separately.
 
+## Mobile API v2 protocol
+
+The v2 protocol runs on the same `/ws/chat` socket, listeners, and authentication as v1. It carries
+Steer, the durable Follow Up queue, and conversation-wide replay by `v2Seq`. It has no voice mode
+and no browser live view: a v2 socket accepts only the nine client frames below. The queue model is
+explained in [HQ Mobile API](/api-hq-mobile#how-the-queue-works).
+
+A v2 session goes like this:
+
+1. Read `GET /mobile/v2/conversations/:id/bootstrap` for the conversation and its `v2ThroughSeq`.
+2. Open `/ws/chat` and send `hello` as the first frame. Wait for `hello_ack`.
+3. Send `subscribe_conversation` with the bootstrap's `v2ThroughSeq` as `sinceV2Seq`. The HQ replays
+   later frames, then sends `conversation_subscribed`.
+4. Send `message` to start a run, `enqueue_input` to Steer or queue a Follow Up, and the other
+   commands as needed.
+5. After a disconnect, reconnect and subscribe again with the last `v2Seq` you applied.
+
+### Negotiation
+
+The first frame chooses the protocol. See [Versioning and capabilities](#versioning-and-capabilities)
+for every first-frame outcome.
+
+#### hello
+
+Client frame. Selects v2 and offers capabilities.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"hello"` | Yes | |
+| `contractVersion` | `2` | Yes | Any other value closes the socket with `1002` `unsupported_version` |
+| `capabilities` | string[] | Yes | Capabilities the client supports. Non-empty strings, no duplicates |
+
+```json
+{"type":"hello","contractVersion":2,"capabilities":["chat-input-queue-v1","auto-delivery-v1"]}
+```
+
+The body may contain only these three fields. A malformed `hello` closes the socket with `1002`
+`invalid_frame`.
+
+#### hello_ack
+
+Server frame. Confirms v2 and lists the capabilities both sides support.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `"hello_ack"` | |
+| `contractVersion` | `2` | |
+| `capabilities` | string[] | The offered capabilities that the HQ supports, in the client's order. Currently only `chat-input-queue-v1` and `auto-delivery-v1` are echoed; other strings are dropped |
+
+```json
+{"type":"hello_ack","contractVersion":2,"capabilities":["chat-input-queue-v1","auto-delivery-v1"]}
+```
+
+A client that did not offer `auto-delivery-v1` gets only `chat-input-queue-v1` back.
+
+### Frame rules
+
+Every v2 frame is a JSON text object whose `type` is one of the nine client frames. The HQ checks
+each frame in two stages.
+
+**Fatal errors close the socket** with code `1002` and reason `invalid_frame`, and no reply frame:
+
+- The text is not JSON, is not an object, or is a binary message.
+- `type` is missing or unknown. This includes every v1-only frame, such as `resume`, `watch`,
+  `follow_up`, `subscribe`, and all `voice_*` and `browser_view_*` frames.
+- `id` is invalid. On `subscribe_conversation`, `enqueue_input`, `edit_follow_up`,
+  `remove_follow_up`, and `resume_follow_ups`, `id` must be a canonical UUID
+  (`8-4-4-4-12` hex digits). On `message`, `answer`, and `cancel`, `id` is a run ID: 1 to 256 UTF-8
+  bytes containing at least one character other than a space, tab, CR, or LF. Run IDs are compared
+  exactly, without trimming.
+
+**Invalid bodies are rejected without closing.** When the `id` is valid but another field is not,
+the HQ answers `command_rejected` with code `validation_failed`, the error `Invalid <type> frame`,
+and `retryable: false`. Bodies accept only the fields listed for each frame.
+
+Field rules shared by the commands:
+
+- `conversationId` must be a UUID. The HQ does not accept a sub-agent's `sub_` ID on a v2 command.
+- `images` holds at most four `{ "mediaType", "data" }` objects. `mediaType` is `image/jpeg`,
+  `image/png`, `image/gif`, or `image/webp`. `data` is canonical padded base64. Each image is at
+  most 5 MiB decoded, and all images in the frame at most 12 MiB.
+- `location` has the same fields as the v1 [`message`](#message) location. It is validated
+  strictly: no extra keys at either level, and an invalid `location` rejects the frame.
+
+Each command runs against the socket's current subscription:
+
+- `message` and `enqueue_input` need a subscription to that `conversationId` and `agentId`.
+  `edit_follow_up`, `remove_follow_up`, and `resume_follow_ups` need a subscription to that
+  `conversationId`. Otherwise the HQ answers `command_rejected` with `not_found`.
+- `answer` and `cancel` need their `id` to be a live run in the subscribed conversation. Otherwise
+  the answer is `not_found`.
+- After the agent is disabled or deleted, or while the HQ is shutting down, every command gets
+  `command_rejected` with `gateway_offline` and `retryable: true`. So does an unexpected internal
+  failure.
+
+**Retries.** Every command carries a client-generated `id`, and `enqueue_input` also carries a
+distinct `inputId`. After an uncertain send, retry with the same IDs and exactly the same payload.
+The HQ does not apply the command twice. It sends the recorded result again, whether that was a
+set of sequenced frames or a `command_rejected`. Reusing a command `id` for a different payload is
+rejected with `validation_failed` and `Command ID was already used for a different request`.
+
+### Client frames
+
+#### subscribe_conversation
+
+Replays a conversation from a `v2Seq` cursor and subscribes the socket to it.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"subscribe_conversation"` | Yes | |
+| `id` | string | Yes | UUID. Echoed on `conversation_subscribed` |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation UUID |
+| `sinceV2Seq` | integer | Yes | Last `v2Seq` applied, or `0` |
+
+```json
+{"type":"subscribe_conversation","id":"00000000-0000-4000-8000-000000000002","agentId":"agent-01","conversationId":"00000000-0000-4000-8000-000000000001","sinceV2Seq":0}
+```
+
+The HQ sends every stored frame with a `v2Seq` greater than `sinceV2Seq`, then any frames produced
+during the replay, then `conversation_subscribed`. A socket holds one subscription at a time. A new
+`subscribe_conversation` replaces the previous one once its replay completes. The subscription
+lasts across runs: a terminal frame does not end it. Only the socket closing does. An unknown
+conversation, or one owned by another agent, is rejected with `not_found`.
+
+#### message (v2)
+
+Starts a run in the subscribed conversation.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"message"` | Yes | |
+| `id` | string | Yes | The run ID. Reuse it for `answer` and `cancel` |
+| `agentId` | string | Yes | Must match the subscription |
+| `channelId` | string | Yes | Client channel label |
+| `conversationId` | string | Yes | Must match the subscription |
+| `text` | string | Yes | The user's message |
+| `resumable` | `true` | Yes | Must be `true` |
+| `images` | array | No | Image attachments |
+| `location` | object | No | Time zone and optional position |
+
+```json
+{"type":"message","id":"00000000-0000-4000-8000-000000000003","agentId":"agent-01","channelId":"mobile","conversationId":"00000000-0000-4000-8000-000000000001","text":"Publish the v2 contract.","resumable":true}
+```
+
+v2 `message` has no `modality` or `streamingBehavior`. While another run is active, `message` is
+rejected with `conversation_busy` and `details.activeTurnId`; use `enqueue_input` instead. While the
+queue is paused, it is rejected with `validation_failed`.
+
+#### enqueue_input
+
+Steers the active run, queues a Follow Up, or lets the HQ choose.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"enqueue_input"` | Yes | |
+| `id` | string | Yes | Command UUID |
+| `inputId` | string | Yes | Input UUID. Identifies the pending input from now on |
+| `agentId` | string | Yes | Must match the subscription |
+| `channelId` | string | Yes | Client channel label |
+| `conversationId` | string | Yes | Must match the subscription |
+| `text` | string | Yes | Message text |
+| `images` | array | No | Image attachments |
+| `behavior` | `"steer"` \| `"followUp"` \| `"auto"` | Yes | How to deliver the input |
+| `expectedActiveTurnId` | string | For `steer` and `auto` | The run the client believes is active. It must be absent for `followUp` |
+
+A Steer:
+
+```json
+{"type":"enqueue_input","id":"00000000-0000-4000-8000-000000000021","inputId":"00000000-0000-4000-8000-000000000022","agentId":"agent-01","channelId":"mobile","conversationId":"00000000-0000-4000-8000-000000000001","text":"Use the updated constraint.","behavior":"steer","expectedActiveTurnId":"00000000-0000-4000-8000-000000000003"}
+```
+
+A Follow Up:
+
+```json
+{"type":"enqueue_input","id":"00000000-0000-4000-8000-000000000023","inputId":"00000000-0000-4000-8000-000000000024","agentId":"agent-01","channelId":"mobile","conversationId":"00000000-0000-4000-8000-000000000001","text":"Then summarize the result.","behavior":"followUp"}
+```
+
+On success every subscriber receives `input_accepted`. A Follow Up to an idle conversation whose
+queue is not paused starts at once, so `input_delivered` and the new run's `accepted` follow.
+
+| Rejection code | When | `details` |
+|----------------|------|-----------|
+| `revision_conflict` | A Steer names a run that is no longer active | `activeTurnId`, `refreshRequired` |
+| `conversation_busy` | The active run is not accepting Steers | |
+| `validation_failed` | 20 pending inputs of that kind already, the 100 MiB pending payload limit, a reused `inputId`, or an archived conversation | Limit or item fields, and `refreshRequired` |
+| `delivery_choice_required` | `auto` could not be routed. Ask the user and resend as `steer` or `followUp` with a new command `id` | Optional `suggested` (`steer` or `followUp`) and `confidence` |
+
+```json
+{"type":"command_rejected","id":"cmd-auto-1","conversationId":"00000000-0000-4000-8000-0000000000c1","code":"delivery_choice_required","error":"Choose Steer or Follow Up","retryable":false,"details":{"suggested":"steer","confidence":0.42}}
+```
+
+#### edit_follow_up
+
+Replaces the text and images of a queued Follow Up.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"edit_follow_up"` | Yes | |
+| `id` | string | Yes | Command UUID |
+| `conversationId` | string | Yes | Must match the subscription |
+| `inputId` | string | Yes | The Follow Up's `inputId` |
+| `expectedRevision` | integer | Yes | The item's current `revision` |
+| `text` | string | Yes | Replacement text |
+| `images` | array | No | Replacement image set |
+
+```json
+{"type":"edit_follow_up","id":"00000000-0000-4000-8000-000000000025","conversationId":"00000000-0000-4000-8000-000000000001","inputId":"00000000-0000-4000-8000-000000000024","expectedRevision":0,"text":"Then summarize the result and risks."}
+```
+
+On success every subscriber receives `input_updated`. The command is rejected with `not_found` for
+an unknown input, `revision_conflict` for a stale `expectedRevision`, and `validation_failed` when
+the item is not a queued Follow Up, the conversation is archived, or the edit exceeds the payload
+limit. `details` carries the item's current `state`, `itemRevision`, and `queueRevision`, with
+`refreshRequired: true`. Refresh before you retry.
+
+#### remove_follow_up
+
+Removes a queued Follow Up.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"remove_follow_up"` | Yes | |
+| `id` | string | Yes | Command UUID |
+| `conversationId` | string | Yes | Must match the subscription |
+| `inputId` | string | Yes | The Follow Up's `inputId` |
+| `expectedRevision` | integer | Yes | The item's current `revision` |
+
+```json
+{"type":"remove_follow_up","id":"00000000-0000-4000-8000-000000000026","conversationId":"00000000-0000-4000-8000-000000000001","inputId":"00000000-0000-4000-8000-000000000028","expectedRevision":0}
+```
+
+On success every subscriber receives `input_removed`. Removing the last queued Follow Up also
+clears a pause. Rejections match `edit_follow_up`.
+
+#### resume_follow_ups
+
+Resumes a paused queue. The oldest queued Follow Up starts.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"resume_follow_ups"` | Yes | |
+| `id` | string | Yes | Command UUID |
+| `conversationId` | string | Yes | Must match the subscription |
+| `expectedQueueRevision` | integer | Yes | The conversation's current `queueRevision` |
+
+```json
+{"type":"resume_follow_ups","id":"00000000-0000-4000-8000-000000000027","conversationId":"00000000-0000-4000-8000-000000000001","expectedQueueRevision":3}
+```
+
+On success every subscriber receives `queue_resumed`. The command is rejected with
+`revision_conflict` for a stale `expectedQueueRevision`, and with `validation_failed` when the
+queue is not paused or the conversation is archived.
+
+#### answer (v2)
+
+Answers a `question` event from a live run. The fields match the v1 [`answer`](#answer).
+
+```json
+{"type":"answer","id":"turn-01","questionId":"question-01","answer":"Yes"}
+```
+
+#### cancel (v2)
+
+Cancels a live run. The body is `type` and `id`, where `id` is the run ID.
+
+```json
+{"type":"cancel","id":"turn-01"}
+```
+
+The run ends with `done` and `outcome: "cancelled"`. Unlike v1 `stop_conversation`, cancelling does
+not pause the queue: the next Follow Up starts.
+
+### Control frames
+
+Control frames have no `v2Seq`. They go only to the socket they answer and are never replayed.
+`hello_ack` is described under [Negotiation](#negotiation).
+
+#### conversation_subscribed
+
+Ends a `subscribe_conversation` replay.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `"conversation_subscribed"` | |
+| `id` | string | The `subscribe_conversation` frame's `id` |
+| `conversationId` | string | Subscribed conversation |
+| `v2ThroughSeq` | integer | The highest `v2Seq` delivered by the replay |
+
+```json
+{"type":"conversation_subscribed","id":"00000000-0000-4000-8000-000000000002","conversationId":"00000000-0000-4000-8000-000000000001","v2ThroughSeq":12}
+```
+
+#### command_rejected
+
+A command was not applied. The socket stays open.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"command_rejected"` | Yes | |
+| `id` | string | Yes | The rejected command's `id` |
+| `conversationId` | string | No | Present when the command named a conversation |
+| `code` | string | Yes | A `MobileApiError` code, such as `validation_failed`, `not_found`, `revision_conflict`, `conversation_busy`, `gateway_offline`, or `delivery_choice_required` |
+| `error` | string | Yes | Human-readable message |
+| `retryable` | boolean | Yes | Whether the same command may succeed later |
+| `details` | object | No | Structured context for the code |
+
+```json
+{"type":"command_rejected","id":"00000000-0000-4000-8000-000000000026","conversationId":"00000000-0000-4000-8000-000000000001","code":"revision_conflict","error":"The pending input revision changed.","retryable":true,"details":{"currentRevision":1}}
+```
+
+A rejection preserves the client's draft. Show it again instead of discarding it.
+
+### Sequenced frames
+
+Every durable change is a sequenced frame with a `v2Seq`. The HQ stores the frame, then sends it
+to every socket subscribed to the conversation. The same frames come back from
+`subscribe_conversation` and from the
+[v2 replay route](/api-hq-mobile#get-%2Fmobile%2Fv2%2Fagents%2F%3Aagentid%2Fconversations%2F%3Aconversationid%2Fevents).
+`v2Seq` is dense and increasing per conversation, and independent of v1's `seq`.
+
+#### accepted, event, done, and error (v2)
+
+Run frames. Each carries these fields, and `id` always equals `runId`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | The run ID |
+| `conversationId` | string | Conversation |
+| `runId` | string | The outer run |
+| `segmentTurnId` | string | The segment within the run. Equals `runId` for the first segment; each delivered Steer starts a segment with a new ID |
+| `v2Seq` | integer | Sequence |
+
+| `type` | Extra fields |
+|--------|--------------|
+| `accepted` | `userMessageId`, `assistantMessageId`, `revision`. Optional `origin`, `kind`, and `requestId`, sent live only and never replayed |
+| `event` | `event`: the agent event. The event types are the v1 [event](#event) types |
+| `done` | `outcome`: `completed`, `cancelled`, or `interrupted` |
+| `error` | `error`, optional `code` and `retryable`. Ends the run |
+
+```json
+{"type":"accepted","id":"00000000-0000-4000-8000-000000000003","conversationId":"sub_01ARZ3NDEKTSV4RRFFQ69G5FAV","runId":"00000000-0000-4000-8000-000000000003","segmentTurnId":"00000000-0000-4000-8000-000000000003","v2Seq":1,"userMessageId":"00000000-0000-4000-8000-000000000013","assistantMessageId":"00000000-0000-4000-8000-000000000014","revision":1,"origin":"parent","kind":"subagent","requestId":"resume-01"}
+```
+
+```json
+{"type":"event","id":"00000000-0000-4000-8000-000000000003","conversationId":"00000000-0000-4000-8000-000000000001","runId":"00000000-0000-4000-8000-000000000003","segmentTurnId":"00000000-0000-4000-8000-000000000003","v2Seq":2,"event":{"type":"text_delta","text":"Working on it."}}
+```
+
+```json
+{"type":"done","id":"00000000-0000-4000-8000-000000000003","conversationId":"00000000-0000-4000-8000-000000000001","runId":"00000000-0000-4000-8000-000000000003","segmentTurnId":"00000000-0000-4000-8000-000000000003","v2Seq":3,"outcome":"completed"}
+```
+
+```json
+{"type":"error","id":"00000000-0000-4000-8000-000000000051","conversationId":"00000000-0000-4000-8000-000000000001","runId":"00000000-0000-4000-8000-000000000051","segmentTurnId":"00000000-0000-4000-8000-000000000051","v2Seq":4,"error":"Provider unavailable.","code":"gateway_offline","retryable":true}
+```
+
+A run started from the queue has no client `message`. Its `accepted` is the first frame with its
+`runId`, and it follows the `input_delivered` that started it.
+
+#### input_accepted, input_updated, input_removed, and input_failed
+
+Changes to one pending input.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | `input_accepted`, `input_updated`, `input_removed`, or `input_failed` |
+| `id` | string | The command that caused the change, or a server-generated ID for a change the HQ made itself |
+| `conversationId` | string | Conversation |
+| `v2Seq` | integer | Sequence |
+| `queueRevision` | integer | Queue revision after the change |
+| `input` | object | The [pending input](/api-hq-mobile#the-pending-input-object) after the change |
+
+```json
+{"type":"input_accepted","id":"00000000-0000-4000-8000-000000000021","conversationId":"00000000-0000-4000-8000-000000000001","v2Seq":8,"queueRevision":1,"input":{"inputId":"00000000-0000-4000-8000-000000000022","kind":"steer","targetTurnId":"00000000-0000-4000-8000-000000000003","text":"Use the updated constraint.","state":"queued","revision":0,"enqueueOrder":1,"createdAt":"2026-09-06T09:06:00.000Z","updatedAt":"2026-09-06T09:06:00.000Z"}}
+```
+
+```json
+{"type":"input_updated","id":"00000000-0000-4000-8000-000000000025","conversationId":"00000000-0000-4000-8000-000000000001","v2Seq":9,"queueRevision":2,"input":{"inputId":"00000000-0000-4000-8000-000000000024","kind":"follow_up","text":"Then summarize the result.","state":"queued","revision":1,"enqueueOrder":2,"createdAt":"2026-09-06T09:07:00.000Z","updatedAt":"2026-09-06T09:08:00.000Z"}}
+```
+
+```json
+{"type":"input_removed","id":"00000000-0000-4000-8000-000000000026","conversationId":"00000000-0000-4000-8000-000000000001","v2Seq":10,"queueRevision":3,"input":{"inputId":"00000000-0000-4000-8000-000000000028","kind":"follow_up","text":"Finally list the next steps.","state":"removed","revision":1,"enqueueOrder":3,"createdAt":"2026-09-06T09:09:00.000Z","updatedAt":"2026-09-06T09:10:00.000Z"}}
+```
+
+`input_failed` reports an input that will not be delivered, with `failureCode` and
+`failureMessage` on the input. A Steer that its run ended before delivering fails this way.
+
+```json
+{"type":"input_failed","id":"00000000-0000-4000-8000-000000000032","conversationId":"00000000-0000-4000-8000-000000000001","v2Seq":12,"queueRevision":5,"input":{"inputId":"00000000-0000-4000-8000-000000000028","kind":"follow_up","text":"Finally list the next steps.","state":"failed","revision":1,"enqueueOrder":3,"createdAt":"2026-09-06T09:09:00.000Z","updatedAt":"2026-09-06T09:12:00.000Z","failureCode":"gateway_offline","failureMessage":"Gateway disconnected before delivery."}}
+```
+
+#### input_delivered
+
+An input reached the agent. It carries the input fields above plus the identities it was delivered
+into: `runId`, `segmentTurnId`, `userMessageId`, and `assistantMessageId`. For a Steer, `runId` is
+the running run and `segmentTurnId` is the new segment. For a Follow Up, `runId` is the new run.
+
+```json
+{"type":"input_delivered","id":"00000000-0000-4000-8000-000000000021","conversationId":"00000000-0000-4000-8000-000000000001","v2Seq":11,"queueRevision":4,"input":{"inputId":"00000000-0000-4000-8000-000000000022","kind":"steer","targetTurnId":"00000000-0000-4000-8000-000000000003","text":"Use the updated constraint.","state":"delivered","revision":1,"enqueueOrder":1,"createdAt":"2026-09-06T09:06:00.000Z","updatedAt":"2026-09-06T09:11:00.000Z","runId":"00000000-0000-4000-8000-000000000003","segmentTurnId":"00000000-0000-4000-8000-000000000042","userMessageId":"00000000-0000-4000-8000-000000000043","assistantMessageId":"00000000-0000-4000-8000-000000000044","deliveredAt":"2026-09-06T09:11:00.000Z"},"runId":"00000000-0000-4000-8000-000000000003","segmentTurnId":"00000000-0000-4000-8000-000000000042","userMessageId":"00000000-0000-4000-8000-000000000043","assistantMessageId":"00000000-0000-4000-8000-000000000044"}
+```
+
+#### queue_paused and queue_resumed
+
+The queue's pause state changed.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"queue_paused"` \| `"queue_resumed"` | Yes | |
+| `id` | string | No | The command that caused the change, when there was one |
+| `conversationId` | string | Yes | Conversation |
+| `v2Seq` | integer | Yes | Sequence |
+| `queueRevision` | integer | Yes | Queue revision after the change |
+| `queuePaused` | boolean | Yes | The new pause state |
+| `pendingFollowUpCount` | integer | Yes | Follow Ups waiting |
+
+```json
+{"type":"queue_paused","id":"00000000-0000-4000-8000-000000000033","conversationId":"00000000-0000-4000-8000-000000000001","v2Seq":13,"queueRevision":6,"queuePaused":true,"pendingFollowUpCount":2}
+```
+
+```json
+{"type":"queue_resumed","id":"00000000-0000-4000-8000-000000000027","conversationId":"00000000-0000-4000-8000-000000000001","v2Seq":14,"queueRevision":7,"queuePaused":false,"pendingFollowUpCount":2}
+```
+
 ## Projects WebSocket
 
 Desktop's Projects views receive live updates from a separate, broadcast-only socket on the
@@ -1157,6 +1605,7 @@ ws://127.0.0.1:9300/projects/ws?token=<your-management-token>
   A missing or wrong token closes the socket with `4001` `Unauthorized`. When the HQ runs without
   a management token, no token is required.
 - **Direction**: server to client only. The HQ ignores anything the client sends.
+- **Shutdown**: when the HQ shuts down, it closes the socket with `1012` `gateway_shutdown`.
 - **Subscription**: every client receives every event. There is no filtering, replay, or
   acknowledgement.
 
@@ -1195,8 +1644,10 @@ Change the port with `--channel-port`.
 
 ### Error frames
 
-The HQ never closes a healthy socket because of a bad frame. It answers with an `error` frame and
-keeps the socket open.
+On a v1 socket, the HQ never closes a healthy socket because of a bad frame, with one exception:
+a `hello` after the first frame closes it with `1002`. Otherwise the HQ answers with an `error`
+frame and keeps the socket open. A v2 socket answers bad commands with `command_rejected` and
+closes on malformed frames; see [Frame rules](#frame-rules).
 
 | Condition | Frame |
 |-----------|-------|
@@ -1215,8 +1666,9 @@ Codes the socket can return on `error`:
 | `conversation_busy` | `true` | Another turn is still settling in the conversation, or the agent is being disabled. `activeTurnId` names the busy turn when known |
 | `gateway_offline` | `true` | An internal HQ failure, including a request that arrives while the HQ is shutting down. The message is `Internal HQ error` |
 
-The contract's `MobileApiErrorCode` list defines further codes shared with the HTTP API, so
-treat any unknown `code` as a generic failure. Legacy turns return `error` frames with only `id`,
+The contract's `MobileApiErrorCode` list defines further codes shared with the HTTP API, such as
+`delivery_choice_required`, which only the v2 protocol sends. Treat any unknown `code` as a generic
+failure. Legacy turns return `error` frames with only `id`,
 `error`, and sometimes `seq`.
 
 ### Close codes
@@ -1224,9 +1676,15 @@ treat any unknown `code` as a generic failure. Legacy turns return `error` frame
 | Code | Reason | When |
 |------|--------|------|
 | `4001` | `Unauthorized` | The upgrade's credentials were rejected. Sent right after the upgrade completes, on `/ws/chat` and `/projects/ws` |
+| `1002` | `unsupported_version` | The first frame was a `hello` with a `contractVersion` other than `2` |
+| `1002` | `hello_required` | The first frame was a v2-only command |
+| `1002` | `unexpected_hello` | A `hello` arrived after the socket had chosen a protocol |
+| `1002` | `invalid_frame` | A malformed `hello`, or a malformed frame on a v2 socket |
+| `1012` | `gateway_shutdown` | The HQ is shutting down. Sent to every open `/ws/chat` and `/projects/ws` socket, and to any upgrade that completes during shutdown. Reconnect once the HQ is back |
 
-The HQ sends no other application close code. Through the relay, a device can also see the
-relay's own `4401` and `4429` closes. See [Relay API](/api-relay).
+The HQ sends no other close code. Through the relay, a device can also see the relay's own `4401`
+and `4429` closes. The relay passes `1002` and the `3000`–`4999` range through, but turns `1012` into
+`1000`. See [Relay API](/api-relay).
 
 When a socket closes, the HQ stops that socket's voice session (`reason: "socket"`), stops its
 browser viewer (`reason: "socket_closed"`), drops its subscriptions and watches, and cancels its
