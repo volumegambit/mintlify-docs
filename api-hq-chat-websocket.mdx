@@ -1,0 +1,1233 @@
+---
+title: "HQ Chat WebSocket"
+description: "Wire reference for the HQ's chat WebSocket: resumable turns, pending work, hands-free voice, browser live view, and the projects event socket."
+---
+
+Every chat client talks to an HQ over one WebSocket at `/ws/chat`. The socket carries JSON text
+frames in both directions. The client sends commands (start a turn, answer a question, cancel,
+queue a follow-up, stream microphone audio, drive a browser), and the HQ streams back the turn's
+lifecycle, agent events, voice state, and browser frames.
+
+The same protocol is served on three routes to the same HQ. The HQ also serves a separate,
+server-to-client [projects WebSocket](#projects-websocket) for Desktop.
+
+| Endpoint | Listener | Who uses it | Authenticates with |
+|----------|----------|-------------|--------------------|
+| `ws://127.0.0.1:9200/ws/chat` | Channel server, loopback only (`--channel-port`, default `9200`) | Desktop and Mission Control on the same machine | Chat token in the `Authorization` header, or `?token=` / `?ticket=` when no header is sent |
+| `wss://<gateway-host>:9400/ws/chat` | Pinned-TLS mobile listener on all interfaces (`--lan-port`, default `9400`) | iOS and Android on the local network | Same as above |
+| `wss://<gatewayId>.<zone>/ws/chat` | Hosted relay, port `443` | Phones and the web app away from home | Relay pairing credential, plus the same chat-token rules. See [Relay API](/api-relay) |
+| `ws://127.0.0.1:9300/projects/ws` | Management server, loopback only | Desktop's Projects views | Management token in `?token=` |
+
+The relay forwards `/ws/chat` upgrades to the HQ's channel server on `9200`, so a relayed socket
+behaves exactly like a loopback one. The mobile listener exists only when the HQ was started with
+both a management token and a chat token.
+
+The phone's "Mobile bearer" and Desktop's "chat token" are the same secret. The HQ accepts one
+chat token (`--chat-token`) on every `/ws/chat` listener and under `/mobile/v1` over HTTP. The
+administrative management token is never accepted on `/ws/chat`.
+
+## Authentication
+
+The HQ checks credentials during the upgrade. The rules are the same on every `/ws/chat`
+listener:
+
+1. If an `Authorization` header is present and non-empty, it must equal
+   `Bearer <chat-token>`. Query parameters are ignored, and a `ticket` is not redeemed.
+2. With no `Authorization` header, the socket is accepted when `?token=<chat-token>` matches or
+   `?ticket=<ticket>` redeems a valid ticket.
+3. Otherwise the upgrade completes and the HQ immediately closes the socket with code `4001`
+   and reason `Unauthorized`.
+
+Native clients send the header and keep the token out of URLs:
+
+```text
+GET /ws/chat HTTP/1.1
+Upgrade: websocket
+Authorization: Bearer <your-chat-token>
+```
+
+Desktop on loopback may use the query fallback:
+
+```text
+ws://localhost:9200/ws/chat?token=<your-chat-token>
+```
+
+### WebSocket tickets
+
+Browsers cannot set headers on a WebSocket upgrade, and the web client should not put the chat
+token in a URL. It mints a single-use ticket over HTTP with the Mobile bearer instead:
+
+```text
+POST /mobile/v1/ws-ticket
+Authorization: Bearer <your-chat-token>
+```
+
+```json
+{"ticket":"0123456789abcdef0123456789abcdef","expiresAt":"2026-08-29T12:00:30Z"}
+```
+
+Then it connects with `wss://<host>/ws/chat?ticket=<ticket>`. A ticket:
+
+- Expires 30 seconds after it is minted.
+- Is consumed by its first redemption attempt, whether or not that attempt was in time.
+- Is redeemable on any `/ws/chat` listener of the HQ that minted it. One ticket store serves the
+  whole HQ.
+- Is ignored, and left unredeemed, when the upgrade also carries an `Authorization` header.
+
+See [HQ Mobile API](/api-hq-mobile) for the rest of the `/mobile/v1` surface.
+
+## Versioning and capabilities
+
+The socket has no in-band handshake or version frame. A client learns what the HQ supports from
+`GET /mobile/v1/health` (or `GET /health` on loopback) before it opens the socket:
+
+| Capability | What it enables on this socket |
+|------------|--------------------------------|
+| `chat-resume-v1` | Resumable turns: `message` with `resumable: true`, `resume`, sequenced `accepted` / `event` / `done` / `error` frames |
+| `conversation-sync-v1` | HTTP conversation sync. Not used by the socket itself |
+| `conversation-control-v2` | Pending work: `watch`, `follow_up`, `interrupt_and_send`, `stop_conversation`, `resume_pending`, `edit_pending`, `remove_pending` |
+| `speech-v1` | [Voice mode](#voice-mode). Advertised only while a speech provider is available |
+
+No capability advertises the [browser live view](#browser-live-view). A client sends
+`browser_view_start` and handles `browser_view_error` with `code: "unavailable"`.
+
+Compatibility rules:
+
+- **Unknown server frame types.** Clients reject a server frame whose `type` they do not know.
+  iOS closes the socket and shows **Update required**. Desktop fails the running turn with
+  **Update Dash: the HQ sent an unsupported chat frame**. A new server frame type is therefore a
+  breaking change: update the clients before the HQ that sends it. `browser_session` is such a
+  frame, and it can arrive mid-turn on any subscribed socket.
+- **Unknown `event` variants.** Clients must preserve or safely ignore agent events they do not
+  recognize, so newer HQs remain compatible.
+- **Unknown enum values.** Clients decode `voice_state.state`, `voice_stopped.reason`, and the
+  `browser_view_*` enums leniently, so a new value does not break the socket.
+- **Unknown client frames.** The HQ answers any frame it cannot parse with an `error` frame,
+  code `validation_failed`, and keeps the socket open. See [Errors](#errors-and-close-codes).
+
+## Connection lifecycle
+
+A socket is multiplexed. One socket can carry several conversations, one voice session, and one
+browser viewer at the same time. Every frame is correlated by its `id`, and most also carry a
+`conversationId`.
+
+### Resumable turns
+
+Resumable turns are the protocol every current client uses. The turn outlives the socket.
+
+1. The client sends `message` with a client-generated turn `id` and `resumable: true`.
+2. The HQ persists the user and assistant messages and sends `accepted`. `accepted` always
+   precedes the turn's first `event`.
+3. The HQ streams `event` frames: text deltas, tool calls, questions, and a final `response`.
+4. The turn ends with exactly one terminal frame: `done` with `outcome: "completed"` or
+   `"cancelled"`, or a sequenced `error`.
+
+Every `accepted`, `event`, `done`, and sequenced `error` carries a durable `seq`. The HQ writes
+the frame to the conversation's event log before it sends it. Sequences are per conversation,
+start at `1`, and keep increasing across turns. Transient events, currently only
+`subagent_progress`, are sent without a `seq` and are never replayed.
+
+The socket that started a turn is also subscribed to the conversation for the rest of its life.
+
+### Reconnecting
+
+Closing a socket only detaches it. Provider work continues on the HQ. To catch up after a gap:
+
+1. Reconnect and authenticate.
+2. Optionally read the gap over HTTP with
+   `GET /mobile/v1/agents/:agentId/conversations/:conversationId/events?sinceSeq=<last-seq>`
+   and apply entries in ascending `seq` order.
+3. Send `resume` with the **same** turn `id` and the last `seq` you applied. The HQ replays every
+   logged frame with a greater `seq` for that conversation, then attaches the socket to the turn
+   if it is still running.
+
+Never resend the `message` with a new turn `id`. Resending the same `message` with the same `id`
+is safe: the HQ does not run it twice. It sends that turn's `accepted` again, replays the log
+from that point, and attaches the socket if the turn is still live.
+
+### Cancellation
+
+Send `cancel` with the turn `id`. A cancelled turn ends with `done` and
+`outcome: "cancelled"`. `cancel` for a turn that is no longer running does nothing.
+
+### Legacy turns
+
+A `message` without `resumable: true` runs a legacy, connection-owned turn. Its frames carry
+`id` and, when the HQ has an event log, a `seq`, but no `conversationId`. `cancel` on a legacy
+turn stops it and answers immediately with `{"type":"done","id":"<turn-id>"}`. Closing the
+socket cancels every legacy turn it started. While a legacy turn runs, a second `message` from the
+same socket on the same conversation with `streamingBehavior: "steer"` or `"followUp"` is delivered to the running turn
+instead of starting a new one. New clients should use resumable turns and the
+[pending-work commands](#pending-work).
+
+### Pending work
+
+With `conversation-control-v2`, a client can queue work behind a running turn:
+
+- `watch` replays the conversation from a cursor and subscribes the socket to its queue. The HQ
+  answers with `watched`, which includes the current queue.
+- `follow_up` queues a message to run after the current turn. `interrupt_and_send` queues a
+  priority message and cancels the named active turn so it runs next.
+- `edit_pending` and `remove_pending` change a queued item, guarded by its `version`.
+- `stop_conversation` cancels the active turn and pauses the queue. `resume_pending` restarts a
+  paused queue.
+
+Each command is answered on the issuing socket by a `command_receipt`. Every watcher of the
+conversation receives `queue_changed` whenever the queue changes. Queued items start their own
+turns with a fresh turn `id`. Their `accepted` carries `requestId` (the `follow_up` command's
+`id`) and `pendingItemId`, and is delivered to watchers. **Watch** the conversation to see turns
+started from the queue.
+
+Command IDs are idempotent. Retrying a command with the same `id` and the same payload returns
+the original receipt with `status: "already_applied"`. Reusing an `id` with a different payload
+is rejected with an `error` frame, code `validation_failed`. A conversation holds at most 100
+pending items.
+
+### Subscriptions
+
+A socket receives a turn's frames if it started or resumed that turn. It also receives turns it
+did not start in two cases:
+
+- `subscribe`, and the implicit subscription from `message` or `resume`, deliver turns the
+  client could not have started itself: server-initiated notification turns
+  (`origin: "notification"`) and sub-agent child turns (`origin: "parent"`). Ordinary user turns
+  started from another device are **not** delivered this way.
+- `watch` delivers every turn on the conversation, plus `queue_changed`.
+
+`subscribe` and `unsubscribe` send no acknowledgement. `browser_session` frames go to both
+subscribers and watchers.
+
+### Heartbeats and timeouts
+
+The HQ sends no application-level heartbeat on `/ws/chat` and enforces no idle timeout on it. A
+client that needs liveness detection must provide its own, such as WebSocket pings. Two timers
+apply inside features: the voice drain timer (8 seconds) and the browser-view safety
+acknowledgement (5 seconds).
+
+## Client frames
+
+Every client frame is a JSON object with a string `type` and a string `id`. The HQ validates
+the fields listed as required; a frame that fails validation is answered with an `error` frame
+and does not change any state.
+
+Common field rules:
+
+- `id` is client-generated. The contract specifies a UUID. For turn frames it is the turn ID;
+  for commands it is the command ID; for voice and browser frames it is the session or viewer ID.
+- `conversationId` must be 1 to 128 characters and must not contain `/`, `\`, or `..`, or start
+  with `.`. The contract narrows it to a UUID, or `sub_` plus a 26-character ULID for a
+  sub-agent conversation.
+- `images` is an array of `{ "mediaType", "data" }` objects, where `data` is standard base64. On
+  resumable `message`, `follow_up`, `interrupt_and_send`, and `edit_pending`, the HQ accepts at
+  most four images, only `image/jpeg`, `image/png`, `image/gif`, or `image/webp`, at most 5 MiB
+  each and 12 MiB combined after decoding.
+
+### message
+
+Starts a turn. With `resumable: true` the turn is durable and survives the socket.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"message"` | Yes | |
+| `id` | string | Yes | The turn ID. Reuse it for `resume`, `answer`, and `cancel` |
+| `agentId` | string | Yes | Target agent |
+| `channelId` | string | Yes | Client channel label, such as `mobile-ios` or `direct` |
+| `conversationId` | string | Yes | Conversation to append to. It must exist and belong to `agentId` |
+| `text` | string | Yes | The user's message |
+| `resumable` | boolean | No | `true` for a resumable turn. Omitted or `false` runs a [legacy turn](#legacy-turns) |
+| `images` | array | No | Image attachments. See the common rules above |
+| `location` | object | No | The device's time zone and, optionally, precise position. See below |
+| `modality` | `"text"` \| `"voice"` | No | `"voice"` appends the spoken-mode system prompt for this turn only |
+| `streamingBehavior` | `"steer"` \| `"followUp"` | No | Legacy turns only. Ignored by resumable turns |
+
+Only the HQ's own [voice session](#voice-mode) sends `modality: "voice"`. A dictated message is
+ordinary typed text once transcribed, so a client must omit `modality` or send `"text"`.
+
+`location` fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `timezone` | string | Yes | IANA time zone, such as `Asia/Singapore` |
+| `utcOffsetMinutes` | integer | Yes | Minutes **east** of UTC at send time, from -840 to 840. Singapore is `480` |
+| `locale` | string | Yes | Locale identifier, such as `en-SG` |
+| `region` | string | No | ISO 3166-1 alpha-2 region code |
+| `precise` | object | No | `latitude`, `longitude`, `accuracyMeters`, and `capturedAt` (RFC 3339) are required; `place` is optional |
+
+JavaScript's `getTimezoneOffset()` is west-positive and must be negated.
+
+```json
+{"type":"message","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","agentId":"agent-01","channelId":"mobile-ios","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","text":"Is the mobile connection ready?","location":{"timezone":"Asia/Singapore","utcOffsetMinutes":480,"locale":"en-SG","region":"SG","precise":{"latitude":1.2966,"longitude":103.7764,"accuracyMeters":12,"capturedAt":"2026-09-06T10:11:02Z","place":"National University of Singapore"}},"images":[{"mediaType":"image/png","data":"aGVsbG8="}],"resumable":true}
+```
+
+A resumable `message` fails with an `error` frame, code `conversation_busy`, while the
+conversation's previous turn is still settling. The frame's `activeTurnId` names that turn when
+the HQ knows it.
+
+### resume
+
+Replays missed frames and reattaches the socket to a running turn.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"resume"` | Yes | |
+| `id` | string | Yes | The turn ID to reattach to |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation to replay |
+| `sinceSeq` | integer | Yes | Last durable `seq` the client applied, or `0`. The HQ replays frames with a greater `seq` |
+
+```json
+{"type":"resume","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","sinceSeq":2}
+```
+
+The replay covers every turn in the conversation after `sinceSeq`, not only the named turn. The
+socket is also subscribed to the conversation. A conversation that does not exist or belongs to
+another agent returns `error` with code `not_found`.
+
+### answer
+
+Answers a `question` event from the running turn.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"answer"` | Yes | |
+| `id` | string | Yes | The turn ID that asked |
+| `questionId` | string | Yes | The `id` of the `question` event |
+| `answer` | string | Yes | The chosen option or free text |
+
+```json
+{"type":"answer","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","questionId":"question-01","answer":"Yes"}
+```
+
+If the turn is not running, the HQ returns `error` with code `not_found`.
+
+### cancel
+
+Stops a running turn.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"cancel"` | Yes | |
+| `id` | string | Yes | The turn ID to cancel |
+
+```json
+{"type":"cancel","id":"018f0f4a-5c42-7a8b-9c01-5234567890ab"}
+```
+
+A resumable turn ends with `done` and `outcome: "cancelled"`, and the cancelling socket receives
+it even if it did not start the turn. A legacy turn is answered immediately with a bare
+`done`.
+
+### subscribe
+
+Receives notification turns and sub-agent child turns for a conversation this socket did not
+start. See [Subscriptions](#subscriptions).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"subscribe"` | Yes | |
+| `id` | string | Yes | Request ID, used only to correlate an `error` |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation to subscribe to |
+
+```json
+{"type":"subscribe","id":"018f0f4a-5c42-7a8b-9c01-5234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab"}
+```
+
+No frame is sent on success. An unknown conversation returns `error` with code `not_found`.
+
+### unsubscribe
+
+Ends a `subscribe`. Always succeeds, even for a deleted conversation, and sends no frame. It does
+not end a `watch`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"unsubscribe"` | Yes | |
+| `id` | string | Yes | Request ID |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation to unsubscribe from |
+
+```json
+{"type":"unsubscribe","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab"}
+```
+
+### watch
+
+Replays a conversation from a cursor, then subscribes the socket to all of its turns and its
+queue. Requires `conversation-control-v2`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"watch"` | Yes | |
+| `id` | string | Yes | Request ID, echoed on `watched` |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation to watch |
+| `sinceSeq` | integer | Yes | Last durable `seq` applied, or `0` |
+
+```json
+{"type":"watch","id":"118f0f4a-5c42-7a8b-9c01-1234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","sinceSeq":12}
+```
+
+The HQ sends the replayed frames first, then `watched`. A watch lasts until the socket closes.
+
+### follow_up
+
+Queues a message to run as its own turn after the current one. Requires
+`conversation-control-v2`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"follow_up"` | Yes | |
+| `id` | string | Yes | Command ID. Becomes the queued item's `commandId` and the resulting turn's `requestId` |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation to queue on |
+| `text` | string | Yes | Message text |
+| `images` | array | No | Image attachments |
+
+```json
+{"type":"follow_up","id":"218f0f4a-5c42-7a8b-9c01-1234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","text":"Also compare the migration cost."}
+```
+
+If the conversation is idle and its queue is running, the item starts immediately.
+
+### interrupt_and_send
+
+Queues a priority message and cancels the active turn so the message runs next. Requires
+`conversation-control-v2`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"interrupt_and_send"` | Yes | |
+| `id` | string | Yes | Command ID |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation to interrupt |
+| `expectedActiveTurnId` | string | Yes | The turn the client believes is running |
+| `text` | string | Yes | Message text |
+| `images` | array | No | Image attachments |
+
+```json
+{"type":"interrupt_and_send","id":"318f0f4a-5c42-7a8b-9c01-1234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","expectedActiveTurnId":"418f0f4a-5c42-7a8b-9c01-1234567890ab","text":"Pause and check the failing test first."}
+```
+
+If `expectedActiveTurnId` is not the running turn, the receipt is `rejected` with reason
+`stale_execution` and nothing is cancelled. Interrupting also sets the queue back to running.
+
+### stop_conversation
+
+Cancels the active turn, if any, and pauses the queue. Requires `conversation-control-v2`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"stop_conversation"` | Yes | |
+| `id` | string | Yes | Command ID |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation to stop |
+
+```json
+{"type":"stop_conversation","id":"518f0f4a-5c42-7a8b-9c01-1234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab"}
+```
+
+### resume_pending
+
+Sets a paused queue back to running and starts the next item. Requires
+`conversation-control-v2`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"resume_pending"` | Yes | |
+| `id` | string | Yes | Command ID |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation whose queue to resume |
+
+```json
+{"type":"resume_pending","id":"618f0f4a-5c42-7a8b-9c01-1234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab"}
+```
+
+An empty queue is `rejected` with reason `queue_empty`.
+
+### edit_pending
+
+Replaces the text and images of a queued item that has not started. Requires
+`conversation-control-v2`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"edit_pending"` | Yes | |
+| `id` | string | Yes | Command ID |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation that holds the item |
+| `pendingId` | string | Yes | The queued item's `id` |
+| `expectedVersion` | integer | Yes | The item's current `version`, at least `1` |
+| `text` | string | Yes | Replacement text |
+| `images` | array | No | Replacement image set |
+
+```json
+{"type":"edit_pending","id":"718f0f4a-5c42-7a8b-9c01-1234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","pendingId":"818f0f4a-5c42-7a8b-9c01-1234567890ab","expectedVersion":2,"text":"Compare both migration and rollback cost."}
+```
+
+The receipt is `rejected` with `not_found`, `already_claimed` (the item has started), or
+`version_conflict` (the `version` changed).
+
+### remove_pending
+
+Removes a queued item that has not started. Requires `conversation-control-v2`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"remove_pending"` | Yes | |
+| `id` | string | Yes | Command ID |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation that holds the item |
+| `pendingId` | string | Yes | The queued item's `id` |
+| `expectedVersion` | integer | Yes | The item's current `version` |
+
+```json
+{"type":"remove_pending","id":"918f0f4a-5c42-7a8b-9c01-1234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","pendingId":"818f0f4a-5c42-7a8b-9c01-1234567890ab","expectedVersion":2}
+```
+
+Rejections match `edit_pending`.
+
+### Voice and browser client frames
+
+The `voice_*` client frames are documented under [Voice mode](#voice-mode), and the
+`browser_view_*` client frames under [Browser live view](#browser-live-view).
+
+## Server frames
+
+Server frames are JSON objects with a string `type`. Turn frames carry the turn's `id`.
+
+### accepted
+
+The HQ admitted a resumable turn and persisted its user and assistant messages. Always the
+turn's first frame.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"accepted"` | Yes | |
+| `id` | string | Yes | Turn ID |
+| `conversationId` | string | Yes | Conversation the turn runs in |
+| `userMessageId` | string | Yes | ID of the persisted user message |
+| `assistantMessageId` | string | Yes | ID of the assistant message the turn fills |
+| `revision` | integer | Yes | Conversation revision after acceptance |
+| `seq` | integer | Yes | Durable sequence |
+| `origin` | `"user"` \| `"notification"` \| `"parent"` | No | Who started the turn. Absent means `"user"` |
+| `kind` | `"user"` \| `"subagent"` | No | Conversation kind. Absent means `"user"` |
+| `requestId` | string | No | Correlation ID. For a turn started from the queue, the `follow_up` or `interrupt_and_send` command `id` |
+| `pendingItemId` | string | No | The queued item this turn was started from |
+
+`origin` and `kind` are omitted for an ordinary user turn in a user conversation, except on
+frames delivered to a `watch`, which always include them. Frames replayed from the event log
+never carry `origin`, `kind`, or `requestId`.
+
+```json
+{"type":"accepted","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","userMessageId":"018f0f4a-5c42-7a8b-9c01-3234567890ab","assistantMessageId":"018f0f4a-5c42-7a8b-9c01-4234567890ab","revision":2,"seq":1}
+```
+
+A sub-agent child turn:
+
+```json
+{"type":"accepted","id":"018f0f4a-5c42-7a8b-9c01-a234567890ab","conversationId":"sub_01JYQ5X7N8ZK4TQ2M9V6C3B0AH","userMessageId":"018f0f4a-5c42-7a8b-9c01-b234567890ab","assistantMessageId":"018f0f4a-5c42-7a8b-9c01-c234567890ab","revision":2,"seq":1,"origin":"parent","kind":"subagent","requestId":"req_01JQ8Z3K7M2N4P6R8T0V2W4X6Y"}
+```
+
+### event
+
+One agent event from the running turn.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"event"` | Yes | |
+| `id` | string | Yes | Turn ID |
+| `conversationId` | string | Resumable turns | Absent on legacy turns |
+| `seq` | integer | No | Durable sequence. Absent on transient events and on a legacy HQ without an event log |
+| `event` | object | Yes | The agent event. Always has a string `type` |
+
+```json
+{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","seq":2,"event":{"type":"text_delta","text":"Ready "}}
+```
+
+Agent event types:
+
+| `event.type` | Fields | Meaning |
+|--------------|--------|---------|
+| `text_delta` | `text` | A chunk of the reply |
+| `thinking_delta` | `text` | A chunk of model reasoning |
+| `tool_use_start` | `id`, `name`, `input` (optional) | A tool call began |
+| `tool_use_delta` | `partial_json` | Streaming tool input |
+| `tool_result` | `id`, `name`, `content`, `isError`, `details`, `images` (last three optional) | A tool call finished |
+| `response` | `content`, `usage` | The final assistant message and token usage (`inputTokens`, `outputTokens`, optional `cacheReadTokens`, `cacheWriteTokens`) |
+| `error` | `error`, `timestamp` (optional) | A model or tool loop error. `error` is a message string |
+| `question` | `id`, `question`, `options` | The agent is waiting for an [`answer`](#answer) |
+| `agent_retry` | `attempt`, `reason` | The provider call is being retried |
+| `context_compacted` | `overflow` | The conversation context was compacted |
+| `file_changed` | `files` | Files the turn changed |
+| `agent_spawned` | `name` | A sub-agent was spawned |
+| `subagent_started` | `subagentId`, `subagentType`, `description`, `prompt`, `model`, `background`, `depth`, `startedAt`, plus optional `name`, `isolation`, `parentTurnId` | A sub-agent started |
+| `subagent_progress` | `subagentId`, `status`, `toolCallCount`, `elapsedMs`, optional `detail`, `question` | Sub-agent heartbeat. **Transient**: no `seq`, never replayed |
+| `subagent_finished` | `subagentId`, `subagentType`, `description`, `status`, `report`, `toolCallCount`, `startedAt`, `endedAt`, optional `name`, `usage` | A sub-agent ended |
+| `skill_loaded` | `name` | The agent loaded a skill |
+| `skill_created` | `name`, `description` | The agent created a skill |
+| `memory_saved` | `name`, `description`, `memoryType`, `action` (`created` or `updated`) | The agent saved a memory |
+| `memory_forgotten` | `name` | The agent deleted a memory |
+| `mcp_server_error` | `server`, `error` | A connected MCP server failed |
+
+Persisted transcripts from older HQs may also contain the retired `worker_spawned`,
+`worker_status`, and `worker_done` events; clients drop them. New variants can be added at any
+time, so ignore types you do not know.
+
+### done
+
+The turn ended.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"done"` | Yes | |
+| `id` | string | Yes | Turn ID |
+| `conversationId` | string | Resumable turns | Absent on legacy turns |
+| `seq` | integer | Resumable turns | Durable sequence |
+| `outcome` | `"completed"` \| `"cancelled"` | Resumable turns | How the turn ended |
+
+```json
+{"type":"done","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","seq":5,"outcome":"completed"}
+```
+
+### error
+
+Either a turn's durable terminal failure, or the rejection of a client frame. The two are told
+apart by `seq`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"error"` | Yes | |
+| `id` | string | Yes | The turn or command ID the error answers. Empty when the frame had no readable `id` |
+| `conversationId` | string | No | Present when the failed frame named one |
+| `seq` | integer | No | Present only on a durable turn failure. That frame ends the turn and is replayed on `resume` |
+| `error` | string | Yes | Human-readable message |
+| `code` | string | No | Machine-readable [error code](#errors-and-close-codes) |
+| `retryable` | boolean | No | Whether retrying the same request can succeed |
+| `activeTurnId` | string | No | On `conversation_busy`, the turn holding the conversation |
+
+An `error` without `seq` is not journaled and is never replayed. It does not end any running
+turn.
+
+```json
+{"type":"error","id":"018f0f4a-5c42-7a8b-9c01-5234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","error":"The previous turn is still settling","code":"conversation_busy","retryable":true,"activeTurnId":"018f0f4a-5c42-7a8b-9c01-2234567890ab"}
+```
+
+### watched
+
+Acknowledges a [`watch`](#watch). Sent after the replayed frames.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"watched"` | Yes | |
+| `id` | string | Yes | The `watch` frame's `id` |
+| `conversationId` | string | Yes | Watched conversation |
+| `throughSeq` | integer | Yes | The conversation's last durable `seq` at the time of the watch |
+| `queue` | object | Yes | Current [queue snapshot](#queue-snapshot) |
+
+```json
+{"type":"watched","id":"118f0f4a-5c42-7a8b-9c01-1234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","throughSeq":12,"queue":{"revision":3,"scheduling":"running","pendingCount":0,"items":[]}}
+```
+
+### command_receipt
+
+The result of a pending-work command. Sent only to the socket that issued the command.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"command_receipt"` | Yes | |
+| `id` | string | Yes | The command's `id` |
+| `conversationId` | string | Yes | Target conversation |
+| `command` | string | Yes | `follow_up`, `interrupt_and_send`, `stop_conversation`, `resume_pending`, `edit_pending`, or `remove_pending` |
+| `status` | `"accepted"` \| `"rejected"` \| `"already_applied"` | Yes | `already_applied` means this command `id` was already processed; the original result is returned |
+| `queue` | object | Yes | [Queue snapshot](#queue-snapshot) after the command |
+| `affectedTurnId` | string | No | The turn the command cancelled or will cancel |
+| `pendingItem` | object | No | The queued item created or changed |
+| `reason` | string | No | Why a command was rejected: `stale_execution`, `version_conflict`, `already_claimed`, `not_found`, `queue_empty`, or `invalid_state` (for example, the queue is full) |
+
+```json
+{"type":"command_receipt","id":"218f0f4a-5c42-7a8b-9c01-1234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","command":"follow_up","status":"accepted","pendingItem":{"id":"818f0f4a-5c42-7a8b-9c01-1234567890ab","commandId":"218f0f4a-5c42-7a8b-9c01-1234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","kind":"follow_up","version":1,"text":"Also compare the migration cost.","state":"pending","createdAt":"2026-09-15T05:00:00.000Z","updatedAt":"2026-09-15T05:00:00.000Z"},"queue":{"revision":4,"scheduling":"running","pendingCount":1,"items":[{"id":"818f0f4a-5c42-7a8b-9c01-1234567890ab","commandId":"218f0f4a-5c42-7a8b-9c01-1234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","kind":"follow_up","version":1,"text":"Also compare the migration cost.","state":"pending","createdAt":"2026-09-15T05:00:00.000Z","updatedAt":"2026-09-15T05:00:00.000Z"}]}}
+```
+
+A command that the HQ cannot admit at all, such as one aimed at a conversation with a running
+legacy turn, is answered with an `error` frame instead of a receipt.
+
+### queue_changed
+
+The conversation's queue changed. Sent to every socket watching the conversation.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"queue_changed"` | Yes | |
+| `conversationId` | string | Yes | Conversation whose queue changed |
+| `queue` | object | Yes | New [queue snapshot](#queue-snapshot) |
+| `commandId` | string | No | The command that caused the change, when there was one |
+
+```json
+{"type":"queue_changed","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","commandId":"218f0f4a-5c42-7a8b-9c01-1234567890ab","queue":{"revision":4,"scheduling":"running","pendingCount":1,"items":[{"id":"818f0f4a-5c42-7a8b-9c01-1234567890ab","commandId":"218f0f4a-5c42-7a8b-9c01-1234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","kind":"follow_up","version":1,"text":"Also compare the migration cost.","state":"pending","createdAt":"2026-09-15T05:00:00.000Z","updatedAt":"2026-09-15T05:00:00.000Z"}]}}
+```
+
+### Queue snapshot
+
+`watched`, `command_receipt`, and `queue_changed` carry the queue in this shape:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `revision` | integer | Increases on every queue change. Use it to discard stale snapshots |
+| `scheduling` | `"running"` \| `"paused"` | Whether the queue starts its next item when the conversation goes idle. A run that fails or is cancelled pauses it, except a cancel caused by `interrupt_and_send` |
+| `pendingCount` | integer | Number of items waiting |
+| `items` | array | The queued items, in run order |
+
+Each item:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Item ID. Use as `pendingId` |
+| `commandId` | string | Yes | The command that created it |
+| `conversationId` | string | Yes | Owning conversation |
+| `kind` | `"follow_up"` \| `"priority"` | Yes | `priority` items come from `interrupt_and_send` |
+| `version` | integer | Yes | Starts at `1`; increases on every edit. Use as `expectedVersion` |
+| `text` | string | Yes | Message text |
+| `images` | array | No | Image attachments |
+| `state` | `"pending"` \| `"claimed"` | Yes | `claimed` once a turn has started from it |
+| `claimedTurnId` | string | No | The turn started from it |
+| `createdAt` | string | Yes | RFC 3339 timestamp |
+| `updatedAt` | string | Yes | RFC 3339 timestamp |
+
+### Voice and browser server frames
+
+The `voice_*` server frames are documented under [Voice mode](#voice-mode), and the
+`browser_view_*` and `browser_session` frames under [Browser live view](#browser-live-view).
+
+## Voice mode
+
+Hands-free voice mode runs a spoken conversation over the same socket. The client streams
+microphone audio; the HQ detects utterances, transcribes them, runs each one as a resumable turn,
+and streams the spoken reply back. It requires the `speech-v1` capability.
+
+Every `voice_*` frame in both directions carries the session `id`, which the client chooses in
+`voice_start`. A socket holds at most one voice session.
+
+### Session lifecycle
+
+1. The client sends `voice_start`. The HQ checks that speech is configured, that the
+   conversation belongs to the agent, and that a speech provider is available. If all pass, it
+   sends `voice_state` with `state: "listening"`.
+2. The client streams `voice_audio`. The client may start streaming immediately; audio that
+   arrives before `listening` is silently dropped.
+3. When the user stops speaking, the HQ sends `voice_state` `transcribing`, then a
+   `voice_transcript` with `final: true` and a new `turnId`.
+4. The HQ starts a resumable turn with that `turnId`, `channelId: "ios"`, and
+   `modality: "voice"`, and sends `voice_state` `thinking`. The socket receives the turn's
+   ordinary `accepted`, `event`, and `done` frames; `accepted` usually arrives just before
+   `thinking`. The `voice_transcript` carrying the `turnId` always arrives **before** the turn's
+   `accepted`, so the client can render its user row first.
+5. As the reply is synthesized, the HQ sends `voice_state` `speaking`, then `voice_speech`
+   chunks.
+6. The client sends `voice_played` as its playback drains. Once the turn is done and the client
+   has acknowledged the last chunk, the HQ returns to `listening`.
+7. The session ends with `voice_stopped`.
+
+Speaking while the HQ is speaking interrupts it (barge-in), once the reply has played for at
+least 300 ms. The HQ cancels the running turn, discards queued speech, returns to `listening`, and
+treats the interrupting utterance as the next turn. An utterance spoken during a turn without
+interrupting it is queued: its `voice_transcript` is sent without a `turnId` when it is heard, and
+again with a `turnId` when its turn starts.
+
+When the agent asks a question, the HQ speaks it, and the next utterance is sent as the
+[`answer`](#answer). That transcript is sent without a `turnId`.
+
+### voice_start
+
+Client frame. Starts a session. A second `voice_start` on the same socket first stops the running
+session with `voice_stopped` and `reason: "replaced"`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_start"` | Yes | |
+| `id` | string | Yes | Session ID, echoed on every `voice_*` frame |
+| `agentId` | string | Yes | Agent to talk to |
+| `conversationId` | string | Yes | Conversation the voice turns are appended to |
+
+```json
+{"type":"voice_start","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab"}
+```
+
+Failures are reported with `voice_error`: `unavailable` when speech is not configured or no
+provider is available, and `invalid` when the conversation does not exist or belongs to another
+agent.
+
+### voice_audio
+
+Client frame. One chunk of microphone capture.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_audio"` | Yes | |
+| `id` | string | Yes | Session ID |
+| `seq` | integer | Yes | Client counter, `0` or greater. Not used for reordering: the HQ consumes chunks in arrival order |
+| `pcm` | string | Yes | Standard base64 of 16 kHz mono PCM16. At most 16,384 decoded bytes (about 512 ms) |
+
+```json
+{"type":"voice_audio","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","seq":42,"pcm":"AAAAAAAAAAA="}
+```
+
+A `pcm` over the limit is answered with an ordinary `error` frame and code `validation_failed`,
+not `voice_error`. Audio is dropped while the session is muted.
+
+### voice_mute
+
+Client frame. Mutes or unmutes the microphone. Playback continues.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_mute"` | Yes | |
+| `id` | string | Yes | Session ID |
+| `muted` | boolean | Yes | `true` to mute |
+
+```json
+{"type":"voice_mute","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","muted":true}
+```
+
+Muting sends `voice_state` `muted`, and no other `voice_state` is sent while muted. Unmuting sends the state the session reached while muted.
+
+### voice_played
+
+Client frame. Every `voice_speech` up to and including `seq` has finished **playing**.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_played"` | Yes | |
+| `id` | string | Yes | Session ID |
+| `seq` | integer | Yes | Highest `voice_speech` `seq` played |
+
+```json
+{"type":"voice_played","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","seq":4}
+```
+
+After a turn's last `voice_speech`, the HQ stays in `speaking` until it receives a `voice_played`
+with a `seq` at least that high, or until an 8-second safety timer fires. Clients that flush
+playback when the session leaves `speaking` must send it, or the last sentence of every reply is
+cut off. A stale or out-of-order `seq` is ignored. Do not acknowledge audio that a barge-in
+discarded.
+
+### voice_stop
+
+Client frame. Ends the session. Idempotent: stopping when no session is running is not an error.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_stop"` | Yes | |
+| `id` | string | Yes | Session ID |
+
+```json
+{"type":"voice_stop","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab"}
+```
+
+The HQ cancels any running voice turn and sends `voice_stopped` with `reason: "client"`. A
+session stopped before its first `listening` ends without a `voice_stopped`.
+
+`voice_audio`, `voice_mute`, and `voice_played` sent with no session on the socket are answered
+with `voice_error`, code `invalid`.
+
+### voice_state
+
+Server frame. The session's phase.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_state"` | Yes | |
+| `id` | string | Yes | Session ID |
+| `state` | string | Yes | `listening`, `transcribing`, `thinking`, `speaking`, `muted`, or `stopped` |
+| `turnId` | string | No | The turn the state belongs to, on `thinking` and `speaking` |
+
+```json
+{"type":"voice_state","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","state":"thinking","turnId":"018f0f4a-5c42-7a8b-9c01-7234567890ab"}
+```
+
+The HQ never sends `state: "stopped"`, although it is a valid value. Every session ends with a
+`voice_stopped` frame instead.
+
+### voice_transcript
+
+Server frame. Text recognized from the user's speech.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_transcript"` | Yes | |
+| `id` | string | Yes | Session ID |
+| `text` | string | Yes | The transcript |
+| `final` | boolean | Yes | Whether the transcript is final. The HQ currently sends only final transcripts |
+| `turnId` | string | No | Present on the transcript that starts a turn |
+
+```json
+{"type":"voice_transcript","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","text":"What's the weather like today?","final":true,"turnId":"018f0f4a-5c42-7a8b-9c01-7234567890ab"}
+```
+
+An utterance that transcribes to nothing produces no transcript and no turn.
+
+### voice_speech
+
+Server frame. A chunk of the spoken reply.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_speech"` | Yes | |
+| `id` | string | Yes | Session ID |
+| `seq` | integer | Yes | Session-wide counter from `0`. It is never reset between turns |
+| `audio` | string | Yes | Base64 audio bytes |
+| `format` | `"mp3"` \| `"pcm16"` | Yes | `mp3`: one complete clip per sentence. `pcm16`: raw chunks of a sentence |
+| `sampleRate` | integer | No | Sample rate of `pcm16` audio |
+| `text` | string | Yes | Caption for the sentence. For `pcm16`, only a sentence's first chunk carries it; later chunks send `""` |
+
+```json
+{"type":"voice_speech","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","seq":3,"audio":"AAAAAAAAAAAAAAAAAAAAAA==","format":"pcm16","sampleRate":24000,"text":"It's sunny and 24 degrees."}
+```
+
+`voice_state` `speaking` always precedes a turn's first `voice_speech`.
+
+### voice_error
+
+Server frame. A speech or session failure.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_error"` | Yes | |
+| `id` | string | Yes | Session ID |
+| `code` | string | Yes | `unauthorized`, `unavailable`, `too_long`, `too_large`, `invalid`, `provider`, or `network` |
+| `error` | string | Yes | Human-readable message |
+
+```json
+{"type":"voice_error","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","code":"provider","error":"The speech provider failed to transcribe the clip"}
+```
+
+Most errors leave the session running:
+
+- A transcription that fails, or takes longer than 20 seconds (`network`), drops that utterance
+  and returns to `listening`.
+- A synthesis failure with `unavailable` or `network` skips that sentence.
+- A turn that fails is reported with `provider` once its partial speech has played.
+
+These end the session with `voice_stopped` and `reason: "provider"`:
+
+- Three consecutive synthesis failures, or one with any other code.
+- A turn rejected because the conversation is busy (`unavailable`), missing, or unauthorized
+  (`invalid`).
+
+### voice_stopped
+
+Server frame. The session ended. No more `voice_*` frames follow for this `id`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"voice_stopped"` | Yes | |
+| `id` | string | Yes | Session ID |
+| `reason` | string | Yes | `client` (`voice_stop`), `replaced` (a new `voice_start`), `provider` (an unrecoverable failure), or `socket` (the socket closed) |
+
+```json
+{"type":"voice_stopped","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","reason":"client"}
+```
+
+## Browser live view
+
+When an agent opens a browser in a conversation, a client can watch it live and take over input.
+The view is a JPEG screencast of the session's active tab. Frames and viewer input belong to the
+person watching: the agent never sees them.
+
+Every `browser_view_*` frame carries the viewer `id` the client chose in `browser_view_start`.
+There is no capability flag. If the HQ has no live view, every `browser_view_*` frame is answered
+with `browser_view_error` and `code: "unavailable"`.
+
+### Viewer rules
+
+- **One viewer per socket.** A second `browser_view_start` on the same socket stops the first
+  with `reason: "replaced"`.
+- **One viewer per browser session, HQ-wide.** A viewer on another socket, or another listener,
+  replaces this one the same way.
+- **Flow control.** At most one `browser_view_frame` is unacknowledged at a time. While it is in
+  flight, newer frames replace a single held frame; intermediate frames are dropped, not queued.
+  Acknowledge each frame with `browser_view_ack`. If the client does not acknowledge a frame
+  within 5 seconds, the HQ acknowledges it itself and sends the next one.
+- **Control.** `control` is `"agent"` while a turn is running in the conversation and `"user"`
+  otherwise. The HQ re-evaluates it every second and before each input, and announces changes
+  with `browser_view_state`. Input sent while `control` is `"agent"` is silently dropped.
+- The view stops with `reason: "session_closed"` when the browser closes and with
+  `"socket_closed"` when the socket closes.
+
+### browser_view_start
+
+Client frame. Starts viewing the conversation's browser.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_start"` | Yes | |
+| `id` | string | Yes | Viewer ID, echoed on every `browser_view_*` frame |
+| `agentId` | string | Yes | Agent that owns the conversation |
+| `conversationId` | string | Yes | Conversation whose browser to view |
+| `maxWidth` | integer | No | Widest frame to send, in pixels. Clamped to 320 through 1920; default 1280 |
+
+```json
+{"type":"browser_view_start","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","maxWidth":960}
+```
+
+The HQ answers with `browser_view_started`, or with `browser_view_error`: `invalid` when the
+conversation does not belong to the agent, `no_session` when no browser is open in it, and
+`unavailable` when the view fails to start.
+
+### browser_view_ack
+
+Client frame. Acknowledges a `browser_view_frame`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_ack"` | Yes | |
+| `id` | string | Yes | Viewer ID |
+| `seq` | integer | Yes | The `seq` of the frame being acknowledged |
+
+```json
+{"type":"browser_view_ack","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","seq":42}
+```
+
+An ack for any frame other than the one in flight is ignored.
+
+### browser_view_input
+
+Client frame. Sends pointer, keyboard, text, or scroll input to the page. Effective only while
+`control` is `"user"`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_input"` | Yes | |
+| `id` | string | Yes | Viewer ID |
+| `input` | object | Yes | One of the input kinds below |
+
+| `input.kind` | Fields |
+|--------------|--------|
+| `pointer` | `x`, `y` (numbers, in frame pixels), `phase` (`down`, `up`, or `move`), optional `button` (`left`, `middle`, or `right`) |
+| `key` | `key` (DOM key name, at most 32 characters), `phase` (`down` or `up`), optional `code` (DOM code, at most 32 characters), optional `modifiers` (integer bitmask) |
+| `text` | `text` (at most 4,096 characters), inserted as typed text |
+| `scroll` | `x`, `y` (numbers, in frame pixels), `dx`, `dy` (scroll deltas) |
+
+The HQ scales frame coordinates to the page. `modifiers` uses the Chrome DevTools Protocol
+bitmask: Alt `1`, Ctrl `2`, Meta `4`, Shift `8`.
+
+```json
+{"type":"browser_view_input","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","input":{"kind":"pointer","x":120.5,"y":340,"phase":"down","button":"left"}}
+```
+
+```json
+{"type":"browser_view_input","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","input":{"kind":"text","text":"hello dash"}}
+```
+
+### browser_view_stop
+
+Client frame. Stops the view. Idempotent.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_stop"` | Yes | |
+| `id` | string | Yes | Viewer ID |
+
+```json
+{"type":"browser_view_stop","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab"}
+```
+
+The HQ answers with `browser_view_stopped` and `reason: "client"` when a view was running.
+
+`browser_view_ack` and `browser_view_input` for a viewer `id` that is not running are answered
+with `browser_view_error`, code `invalid`.
+
+### browser_view_started
+
+Server frame. The view is running.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_started"` | Yes | |
+| `id` | string | Yes | Viewer ID |
+| `width` | integer | Yes | Frame width in pixels |
+| `height` | integer | Yes | Frame height in pixels |
+| `url` | string | Yes | Current page URL |
+| `title` | string | Yes | Current page title |
+| `control` | `"agent"` \| `"user"` | Yes | Who may drive the page |
+
+```json
+{"type":"browser_view_started","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","width":960,"height":600,"url":"https://example.com/","title":"Example Domain","control":"agent"}
+```
+
+No other frame for this viewer precedes it.
+
+### browser_view_frame
+
+Server frame. One screencast frame.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_frame"` | Yes | |
+| `id` | string | Yes | Viewer ID |
+| `seq` | integer | Yes | Frame counter. Acknowledge it with `browser_view_ack` |
+| `data` | string | Yes | Base64 JPEG |
+| `width` | integer | Yes | Frame width in pixels |
+| `height` | integer | Yes | Frame height in pixels |
+
+```json
+{"type":"browser_view_frame","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","seq":7,"data":"AAAAAAAAAAA=","width":960,"height":600}
+```
+
+### browser_view_state
+
+Server frame. The page or control changed.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_state"` | Yes | |
+| `id` | string | Yes | Viewer ID |
+| `url` | string | Yes | Current page URL |
+| `title` | string | Yes | Current page title |
+| `control` | `"agent"` \| `"user"` | Yes | Who may drive the page |
+| `dialog` | string | No | Message of a dialog holding the page, when one is open |
+
+```json
+{"type":"browser_view_state","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","url":"https://example.com/login","title":"Sign in","control":"user","dialog":"Leave site? Changes you made may not be saved."}
+```
+
+### browser_view_stopped
+
+Server frame. The view ended.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_stopped"` | Yes | |
+| `id` | string | Yes | Viewer ID |
+| `reason` | string | Yes | `client`, `replaced`, `session_closed`, or `socket_closed` |
+
+```json
+{"type":"browser_view_stopped","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","reason":"client"}
+```
+
+### browser_view_error
+
+Server frame. A live-view request failed.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_view_error"` | Yes | |
+| `id` | string | Yes | Viewer ID |
+| `code` | `"unavailable"` \| `"invalid"` \| `"no_session"` | Yes | See the frames above |
+| `error` | string | Yes | Human-readable message |
+
+```json
+{"type":"browser_view_error","id":"018f0f4a-5c42-7a8b-9c01-8234567890ab","code":"no_session","error":"No browser session is open on this conversation."}
+```
+
+### browser_session
+
+Server frame. The agent opened or closed a browser in a conversation. Sent to every socket that
+is subscribed to or watching the conversation, and often mid-turn. It is not sequenced and not
+replayed.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"browser_session"` | Yes | |
+| `id` | string | Yes | A fresh ID for this notification. It does not identify a turn or viewer |
+| `agentId` | string | Yes | Agent that owns the browser |
+| `conversationId` | string | Yes | Conversation the browser belongs to |
+| `state` | `"open"` \| `"closed"` | Yes | New state |
+| `profile` | string | No | Named browser profile in use |
+
+```json
+{"type":"browser_session","id":"018f0f4a-5c42-7a8b-9c01-9234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","state":"open","profile":"e2e"}
+```
+
+A sub-agent's browser is not announced separately.
+
+## Projects WebSocket
+
+Desktop's Projects views receive live updates from a separate, broadcast-only socket on the
+management server. It exists only when the HQ has a projects database.
+
+```text
+ws://127.0.0.1:9300/projects/ws?token=<your-management-token>
+```
+
+- **Listener**: the loopback management server (`--management-port`, default `9300`). It is not
+  served on the mobile listener, and the relay's device-facing surface accepts only `/ws/chat`
+  upgrades.
+- **Auth**: the management token in the `token` query parameter. The chat token is not accepted.
+  A missing or wrong token closes the socket with `4001` `Unauthorized`. When the HQ runs without
+  a management token, no token is required.
+- **Direction**: server to client only. The HQ ignores anything the client sends.
+- **Subscription**: every client receives every event. There is no filtering, replay, or
+  acknowledgement.
+
+Each frame is a JSON object with a `topic` and a `payload`:
+
+```json
+{"topic":"comment.added","payload":{"issue_id":"<issue-id>"}}
+```
+
+| `topic` | `payload` |
+|---------|-----------|
+| `issue.created`, `issue.updated`, `issue.deleted` | The full issue object |
+| `project.created`, `project.updated` | The full project object |
+| `comment.added`, `comment.edited`, `comment.deleted` | `{ "issue_id": "<issue-id>" }` for the issue whose comments changed |
+| `issue.event.appended` | `{ "issue_id": "<issue-id>" }` for the issue whose activity changed |
+| `session.linked` | `{ "issue_id": "<issue-id>" }` for the issue a session was linked to |
+
+For the `issue_id` topics, refetch the issue's detail over the management API. See
+[Projects](/projects) for the feature itself.
+
+## Loopback channel server
+
+The channel server on `127.0.0.1:9200` serves the same `/ws/chat` protocol documented on this
+page, with the same frames, the same chat token, and the same HQ-wide ticket store. It differs
+from the mobile listener only in transport: plain `ws://` on loopback instead of pinned TLS on all
+interfaces. It is also the listener the relay forwards device sockets to, so a relayed socket and
+a loopback socket behave identically. Desktop connects with the query-token fallback:
+
+```text
+ws://127.0.0.1:9200/ws/chat?token=<your-chat-token>
+```
+
+Change the port with `--channel-port`.
+
+## Errors and close codes
+
+### Error frames
+
+The HQ never closes a healthy socket because of a bad frame. It answers with an `error` frame and
+keeps the socket open.
+
+| Condition | Frame |
+|-----------|-------|
+| The text is not valid JSON | `{"type":"error","id":"","error":"Invalid JSON"}`. No `code` |
+| Unknown `type`, or missing or invalid fields | `error` with `error: "Invalid message: missing required fields"`, `code: "validation_failed"`, `retryable: false`, and the frame's `id` and `conversationId` when readable |
+| A turn or command the HQ rejects | `error` with a `code` from the table below |
+| A voice request that fails | `voice_error`. See [Voice mode](#voice-mode) |
+| A live-view request that fails | `browser_view_error`. See [Browser live view](#browser-live-view) |
+
+Codes the socket can return on `error`:
+
+| `code` | `retryable` | Meaning |
+|--------|-------------|---------|
+| `validation_failed` | `false` | The frame is malformed, or a command `id` was reused with a different payload |
+| `not_found` | `false` | The conversation does not exist or belongs to another agent, or the turn being answered is not running |
+| `conversation_busy` | `true` | Another turn is still settling in the conversation, or the agent is being disabled. `activeTurnId` names the busy turn when known |
+| `gateway_offline` | `true` | An internal HQ failure, including a request that arrives while the HQ is shutting down. The message is `Internal HQ error` |
+
+The contract's `MobileApiErrorCode` list defines further codes shared with the HTTP API, so
+treat any unknown `code` as a generic failure. Legacy turns return `error` frames with only `id`,
+`error`, and sometimes `seq`.
+
+### Close codes
+
+| Code | Reason | When |
+|------|--------|------|
+| `4001` | `Unauthorized` | The upgrade's credentials were rejected. Sent right after the upgrade completes, on `/ws/chat` and `/projects/ws` |
+
+The HQ sends no other application close code. Through the relay, a device can also see the
+relay's own `4401` and `4429` closes. See [Relay API](/api-relay).
+
+When a socket closes, the HQ stops that socket's voice session (`reason: "socket"`), stops its
+browser viewer (`reason: "socket_closed"`), drops its subscriptions and watches, and cancels its
+legacy turns. Resumable turns keep running.

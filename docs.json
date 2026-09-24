@@ -76,7 +76,20 @@
           },
           {
             "group": "Reference",
-            "pages": ["configuration", "api-reference", "architecture"]
+            "pages": [
+              "configuration",
+              {
+                "group": "API Reference",
+                "pages": [
+                  "api-reference",
+                  "api-hq-mobile",
+                  "api-hq-chat-websocket",
+                  "api-relay",
+                  "api-relay-control-plane"
+                ]
+              },
+              "architecture"
+            ]
           },
           {
             "group": "Help",

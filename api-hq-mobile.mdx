@@ -1,0 +1,1635 @@
+---
+title: "HQ Mobile API"
+description: "Wire reference for /mobile/v1: the HTTP and SSE surface that iOS, Android, and web clients use to reach DashSquad HQ."
+---
+
+The Mobile API is the versioned HTTP surface that native and browser clients use to talk to an HQ.
+Every route lives under `/mobile/v1`. It covers the gateway's health and identity, agents,
+conversations and their history, sub-agents, speech, and a Server-Sent Events stream of cache
+invalidations. Live chat runs on a separate WebSocket, described in
+[HQ Chat WebSocket](/api-hq-chat-websocket).
+
+The loopback-only administrative routes that Mission Control uses are documented in the
+[Management API](/api-reference). Those routes use a different bearer and are never reachable from
+the LAN listener or the relay.
+
+## Overview
+
+### Listeners and base URLs
+
+The same `/mobile/v1` handlers are reachable three ways. Each one runs the same authentication and
+returns the same bodies.
+
+| Path to the HQ | Base URL | Transport | Notes |
+|----------------|----------|-----------|-------|
+| Pinned LAN listener | `https://<lan-host>:9400/mobile/v1` | HTTPS with a self-signed certificate, bound to `0.0.0.0` | Default port `9400`, set with `--lan-port`. Serves only `/mobile/v1` and `/ws/chat`. Every other path returns `404`. |
+| Relay | `https://<gatewayId>.<zone>/mobile/v1` | HTTPS on 443, terminated at the relay | Requests reach the HQ through its outbound tunnel. See [Relay API](/api-relay). |
+| Loopback management server | `http://127.0.0.1:9300/mobile/v1` | Plain HTTP on loopback | Where relay traffic is replayed. Local tools can also call it directly. |
+
+The LAN listener starts only when the HQ has both a management token and a separate mobile token.
+Mission Control always supplies both. A gateway started without them stays loopback-only.
+
+**Certificate pinning.** The LAN certificate is self-signed. Clients trust it by pinning its
+SHA-256 fingerprint, which the HQ reports as lowercase hex. The fingerprint comes from the pairing
+QR code (`tlsCertificateSha256` in the version 3 pairing payload). The HQ does not serve it on the
+Mobile API. In a version 3 payload `mgmtPort` and `chatPort` must be equal, because one listener
+serves both REST and the chat WebSocket.
+
+```json
+{
+  "v": 3,
+  "host": "192.168.1.50",
+  "secure": true,
+  "mgmtToken": "mobile-test-token",
+  "chatToken": "mobile-test-token",
+  "mgmtPort": 9400,
+  "chatPort": 9400,
+  "tlsCertificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+A relay pairing (version 2) carries the relay host and a per-device relay credential in place of
+the port and fingerprint:
+
+```json
+{
+  "v": 2,
+  "host": "gateway-01.relay.dash.example",
+  "secure": true,
+  "mgmtToken": "mobile-test-token",
+  "chatToken": "mobile-test-token",
+  "relayCredential": "relay-device-credential"
+}
+```
+
+Clients must reject the legacy plaintext version 1 payload.
+
+### Authentication
+
+Every route except `GET /mobile/v1/health` needs the HQ's **mobile bearer**:
+
+```text
+Authorization: Bearer <mobile-token>
+```
+
+- The mobile bearer is the HQ's phone-scoped token, set with the gateway's `--chat-token` flag. It is
+  deliberately distinct from the management `--token`: the HQ refuses to start if the two are
+  equal. The management token is **not** accepted on `/mobile/v1`, and the mobile token is not
+  accepted on any administrative route.
+- The header must equal `Bearer ` followed by the token exactly. There is no trimming and no
+  case folding.
+- Both token fields of a pairing payload, `mgmtToken` and `chatToken`, carry this same bearer.
+  Clients trim both, require them to be equal, and store one value. Mission Control writes the
+  bearer into the pairing QR code. Clients that pair through a DashSquad account receive it as
+  `chatToken` from the control plane. See
+  [Relay Control Plane API](/api-relay-control-plane).
+- If the HQ has a management token but no mobile token, every `/mobile/v1` route except
+  `/health` returns `401`. If it has neither, authentication is off. That only happens on a
+  loopback-only gateway.
+
+A missing or wrong bearer gets:
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+
+{ "code": "unauthorized", "error": "Unauthorized", "retryable": false }
+```
+
+**Through the relay**, also send the per-device relay credential on every request:
+
+```bash
+curl "https://$GATEWAY_ID.$RELAY_ZONE/mobile/v1/identity" \
+  -H "x-dash-relay-credential: $RELAY_CREDENTIAL" \
+  -H "Authorization: Bearer $MOBILE_TOKEN"
+```
+
+The relay checks the credential and removes it. The HQ never sees it. The bearer is forwarded
+unchanged and checked by the HQ. A relay-level rejection is a `text/plain` body from the relay,
+not the JSON envelope below. See [Relay API](/api-relay#request-processing-order).
+
+**On the LAN**, send the bearer only, over a TLS connection whose leaf certificate matches the
+pinned fingerprint.
+
+### CORS and browser origins
+
+Cross-origin access is off unless the HQ has a web-origin allowlist. The allowlist is resolved at
+startup:
+
+| Configuration | Allowed origins |
+|---------------|-----------------|
+| `DASH_WEB_ORIGINS` unset, HQ not enrolled on a relay | None. CORS is disabled. |
+| `DASH_WEB_ORIGINS` unset, HQ enrolled on a relay | `https://app.<zone>`, where `<zone>` is the relay hostname with the HQ's own label removed |
+| `DASH_WEB_ORIGINS` set to a comma-separated list | Exactly that list. Entries are trimmed and blank entries dropped. Name the derived default yourself to keep it. |
+| `DASH_WEB_ORIGINS` set but empty | None. This is how you opt out of browser access. |
+
+When the allowlist is non-empty, the HQ applies these CORS rules to `/mobile/v1` and nothing else:
+
+| Rule | Value |
+|------|-------|
+| Origin matching | Exact string match. No wildcards and no subdomain matching. |
+| `Access-Control-Allow-Methods` | `GET`, `POST`, `PATCH`, `DELETE`, `OPTIONS` |
+| `Access-Control-Allow-Headers` | `Authorization`, `Content-Type`, `x-dash-relay-credential` |
+| Credentials | Never allowed. Auth is a bearer header, not cookies. |
+
+Preflight `OPTIONS` requests are answered before authentication, because browsers never attach a
+bearer to a preflight. `x-dash-relay-credential` is in the allowed headers because a browser must
+get it preflight-approved before the relay will see it.
+
+<Warning>
+`PUT` is not an allowed method and `If-Match` is not an allowed header. A browser client
+therefore cannot call `PUT /agents/:id`, `PUT /agents/:id/subagent-definitions/:name`, or the
+conditional `PATCH` and `DELETE /conversations/:id` cross-origin. `ETag` is not exposed to
+scripts either. The same `revision` is always in the response body.
+</Warning>
+
+### Error envelope
+
+Errors use one JSON envelope, `MobileApiError`:
+
+```json
+{
+  "code": "validation_failed",
+  "error": "Request body is invalid",
+  "retryable": false,
+  "details": {
+    "field": "agentId"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | `string` | One of the codes below |
+| `error` | `string` | Human-readable message. Don't parse it. |
+| `retryable` | `boolean` | Whether the same request may succeed later |
+| `details` | `object` | Optional. Structured context for some codes, such as `current` on `revision_conflict` |
+
+| Code | Typical status | Meaning |
+|------|----------------|---------|
+| `unauthorized` | `401` | Missing or wrong mobile bearer. A speech provider credential failure also uses this code. |
+| `not_found` | `404`, or `410` for a deleted conversation | The agent, conversation, sub-agent, or definition does not exist |
+| `validation_failed` | `400`, `409`, `422` | The request is malformed, or the resource is in a state that forbids it |
+| `revision_conflict` | `409` | `If-Match` names a stale revision |
+| `conversation_busy` | `409` | The conversation has an active turn |
+| `gateway_offline` | `500` | Internal HQ error. Retryable. |
+| `rate_limited`, `capability_required` | | Reserved by the contract. No `/mobile/v1` route currently returns them. |
+| `too_large`, `too_long`, `invalid`, `provider`, `network`, `unavailable` | `413`, `400`, `502`, `503` | Speech errors, passed through from the speech provider. See [Speech](#speech). |
+
+Two families of routes return a bare `{ "error": "<message>" }` body instead of the envelope. The
+body has no `code` or `retryable`, so map these by HTTP status:
+
+- The memory routes: `GET /agents/:id/memory`, `GET /agents/:id/memory/:name`, and
+  `DELETE /agents/:id/memory/:name`.
+- The `404` from `GET /agents/:id/skills`.
+
+### Compatibility rules
+
+- Nullable fields are always sent as explicit JSON `null`. Omitting a field and sending `null` mean
+  different things. Optional fields, such as `deletedAt`, may be omitted.
+- Cursors are opaque strings. Send them back unchanged and don't derive ordering from them.
+- Agent IDs are opaque non-empty strings. A user conversation ID is a UUID. A sub-agent
+  conversation ID is `sub_` followed by a 26-character ULID. Both work anywhere a conversation ID
+  is accepted.
+- Request bodies reject unknown fields.
+- Ignore unfamiliar agent event types and properties, capability strings, and SSE event names.
+  Don't reject the containing message.
+
+## Route index
+
+Paths in this table and in the sections below are relative to `/mobile/v1`. For example,
+`GET /conversations` means `GET /mobile/v1/conversations`.
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `GET` | `/health` | None | Health, API version, and capabilities |
+| `GET` | `/identity` | Bearer | The HQ's stable relay identity |
+| `GET` | `/agents` | Bearer | List agents |
+| `POST` | `/agents` | Bearer | Create an agent |
+| `GET` | `/agents/:id` | Bearer | Read one agent |
+| `PUT` | `/agents/:id` | Bearer | Update an agent's model or system prompt |
+| `DELETE` | `/agents/:id` | Bearer | Delete an agent |
+| `POST` | `/agents/:id/enable` | Bearer | Enable an agent |
+| `POST` | `/agents/:id/disable` | Bearer | Disable an agent |
+| `GET` | `/agents/:id/skills` | Bearer | List an agent's skills (read-only) |
+| `GET` | `/agents/:id/memory` | Bearer | List an agent's memories |
+| `GET` | `/agents/:id/memory/:name` | Bearer | Read one memory |
+| `DELETE` | `/agents/:id/memory/:name` | Bearer | Delete one memory |
+| `GET` | `/agents/:id/subagent-types` | Bearer | The sub-agent roster an agent can spawn |
+| `GET` | `/agents/:id/subagent-definitions` | Bearer | List the agent's own definition files |
+| `GET` | `/agents/:id/subagent-definitions/:name` | Bearer | Read one definition |
+| `PUT` | `/agents/:id/subagent-definitions/:name` | Bearer | Create or replace a definition |
+| `DELETE` | `/agents/:id/subagent-definitions/:name` | Bearer | Delete a definition |
+| `GET` | `/models` | Bearer | Models available for agent configuration |
+| `GET` | `/conversations` | Bearer | List conversations, newest first |
+| `POST` | `/conversations` | Bearer | Create a conversation (idempotent) |
+| `GET` | `/conversations/:id` | Bearer | Read a conversation, including tombstones |
+| `PATCH` | `/conversations/:id` | Bearer + `If-Match` | Update title or links |
+| `DELETE` | `/conversations/:id` | Bearer + `If-Match` | Delete a conversation's content |
+| `GET` | `/conversations/:id/messages` | Bearer | Page through persisted messages |
+| `GET` | `/conversations/:id/pending` | Bearer | Page through queued inputs |
+| `GET` | `/conversations/:id/subagents` | Bearer | A conversation's sub-agents |
+| `POST` | `/subagents/:id/stop` | Bearer | Cancel a sub-agent and its descendants |
+| `POST` | `/subagents/:id/resume` | Bearer | Send a message to a sub-agent |
+| `GET` | `/agents/:agentId/conversations/:conversationId/events` | Bearer | Replay a conversation's event log |
+| `GET` | `/events` | Bearer | Server-Sent Events stream of changes |
+| `GET` | `/speech/config` | Bearer | Read speech configuration |
+| `PATCH` | `/speech/config` | Bearer | Update speech configuration |
+| `GET` | `/speech/models` | Bearer | List speech models |
+| `POST` | `/speech/transcriptions` | Bearer | Transcribe a clip |
+| `POST` | `/speech/speech` | Bearer | Synthesize speech |
+| `POST` | `/ws-ticket` | Bearer | Mint a single-use WebSocket ticket |
+
+## Gateway
+
+### GET /health
+
+Returns the HQ's health, the Mobile API version, and the capabilities it supports. This is the only
+unauthenticated route. Call it first to check that the HQ speaks the features you need.
+
+```json
+{
+  "status": "healthy",
+  "startedAt": "2026-07-12T00:00:00.000Z",
+  "pid": 4242,
+  "agents": 1,
+  "channels": 1,
+  "apiVersion": 1,
+  "capabilities": ["conversation-sync-v1", "chat-resume-v1", "conversation-control-v2", "speech-v1"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `"healthy"` | Always `healthy` when the HQ answers |
+| `startedAt` | `string` | ISO 8601 time the HQ process started |
+| `pid` | `integer` | The HQ's process ID |
+| `agents` | `integer` | Number of registered agents |
+| `channels` | `integer` | Number of registered channels |
+| `apiVersion` | `1` | Mobile API version |
+| `capabilities` | `string[]` | Features this HQ supports. See below. |
+
+| Capability | When present |
+|------------|--------------|
+| `conversation-sync-v1` | Always |
+| `chat-resume-v1` | Always |
+| `conversation-control-v2` | Always |
+| `speech-v1` | Only while a speech provider can both transcribe and speak. It appears and disappears as speech credentials change. Gate every `/speech/*` call on it. |
+
+Ignore capability strings you don't recognize. A client that rejects an unknown capability breaks
+as soon as the HQ adds one.
+
+### GET /identity
+
+Returns the HQ's stable identity: its relay gateway ID and its Ed25519 public key.
+
+```json
+{
+  "gatewayId": "gateway-01",
+  "publicKey": "dash-test-public-key"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `gatewayId` | `string` | The HQ's gateway ID, the first DNS label of its relay hostname |
+| `publicKey` | `string` | The HQ's public key, base64 |
+
+**Errors:** `401`.
+
+## Agents
+
+Agent routes return the agent's stored record with provider API keys removed. Mobile clients can
+create an agent and change its model and system prompt. Every other setting is managed in Mission
+Control.
+
+The agent object:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Opaque agent ID |
+| `name` | `string` | Display name |
+| `config` | `object` | The agent's configuration. See below. |
+| `status` | `string` | `registered`, `active`, or `disabled` |
+| `registeredAt` | `string` | ISO 8601 registration time |
+
+`config` always has `name`, `model` (a `provider/model` string), and `systemPrompt`. It may also
+carry `fallbackModels`, `tools`, `skills` (`paths`, `urls`), `workspace`, `maxTokens`, `mcpServers`,
+`plugins`, `providers`, and `swarm`. `providerApiKeys` is never returned. Treat any other
+configuration key as informational and tolerate it.
+
+Failures on the agent routes use the envelope. `404` is
+`{ "code": "not_found", "error": "Agent not found", "retryable": false }`. An unexpected failure is
+`500` with `code: "gateway_offline"` and `retryable: true`.
+
+### GET /agents
+
+Lists every registered agent.
+
+```json
+[
+  {
+    "id": "agent-01",
+    "name": "Mobile Helper",
+    "config": {
+      "name": "Mobile Helper",
+      "model": "anthropic/claude-sonnet-4-5",
+      "systemPrompt": "Help from anywhere.",
+      "fallbackModels": ["openai/gpt-5-mini"],
+      "tools": ["read_file"],
+      "skills": {
+        "paths": ["skills/mobile"],
+        "urls": ["https://skills.dash.example/mobile.md"]
+      },
+      "workspace": "/tmp/dash-mobile-helper",
+      "maxTokens": 4096,
+      "mcpServers": ["linear"],
+      "plugins": ["dash-core-providers"],
+      "providers": ["anthropic", "openai"],
+      "swarm": {
+        "enabled": true,
+        "maxConcurrentWorkers": 2,
+        "maxWorkersPerRun": 4,
+        "maxSteersPerWorker": 2,
+        "maxRunSeconds": 300,
+        "allowedModels": ["anthropic/claude-sonnet-4-5"]
+      }
+    },
+    "status": "active",
+    "registeredAt": "2026-07-12T00:00:00.000Z"
+  }
+]
+```
+
+**Errors:** `401`.
+
+### POST /agents
+
+Creates an agent. The body accepts exactly these three fields, all required:
+
+```json
+{
+  "name": "Mobile Helper",
+  "model": "anthropic/claude-sonnet-4-5",
+  "systemPrompt": "Help from anywhere."
+}
+```
+
+Returns `201` with the new agent object.
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | The body is not valid JSON or not an object, a required field is missing, a field is invalid, or the body has any other field (`Request body contains unknown fields`) |
+| `401` | `unauthorized` | |
+| `500` | `gateway_offline` | Unexpected failure |
+
+### GET /agents/:id
+
+Returns one agent object.
+
+**Errors:** `401`, `404`.
+
+### PUT /agents/:id
+
+Updates an agent. Send at least one of `model` and `systemPrompt`. No other field is accepted.
+
+```json
+{
+  "model": "openai/gpt-5-mini",
+  "systemPrompt": "Help concisely from anywhere."
+}
+```
+
+Returns `200` with the updated agent object.
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | Invalid JSON, an empty object, an unknown field, or an invalid value |
+| `401` | `unauthorized` | |
+| `404` | `not_found` | No such agent |
+| `500` | `gateway_offline` | Unexpected failure |
+
+### DELETE /agents/:id
+
+Deletes an agent. Its running work is cancelled and its conversations are **archived**: each one
+moves to `status: "archived"` and a `conversation:changed` event is sent for it. Archived
+conversations stay readable but can no longer be updated, deleted, or given new turns.
+
+```json
+{ "ok": true }
+```
+
+**Errors:** `401`, `404`, `500`.
+
+### POST /agents/:id/enable
+
+### POST /agents/:id/disable
+
+Enable or disable an agent. Both take no body and return `{ "ok": true }`.
+
+**Errors:** `401`, `404`, `500`.
+
+### GET /agents/:id/skills
+
+Read-only list of the skills the agent can load, including skills it learned by itself. Mobile
+clients can't create, install, edit, or remove skills.
+
+```json
+[
+  {
+    "name": "write-files",
+    "description": "Use when writing files in this project",
+    "source": "agent",
+    "content": "---\nname: write-files\ndescription: Use when writing files in this project\n---\nThese lessons were learned automatically from previous sessions.\n\n## Lessons\n\n- Always use printf instead of echo when writing files.\n"
+  },
+  {
+    "name": "deep-research",
+    "description": "Use for multi-source research tasks",
+    "trigger": "research",
+    "source": "plugin"
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Skill name |
+| `description` | `string` | When to use the skill |
+| `trigger` | `string` | Optional trigger keyword |
+| `source` | `string` | `managed`, `agent`, `remote`, or `plugin` |
+| `content` | `string` | Optional. The skill's full text. |
+
+**Errors:** `401`. `404` when the agent does not exist, with the bare body
+`{ "error": "not found" }`.
+
+## Memory
+
+An agent's saved memories. Mobile clients can list, read, and delete memories. Writing memories
+and changing memory settings are Mission Control only.
+
+<Note>
+These three routes return a bare `{ "error": "<message>" }` body on every failure, not the
+`MobileApiError` envelope. A `404` means the agent or the named memory does not exist.
+</Note>
+
+### GET /agents/:id/memory
+
+Lists the agent's memories. Returns an empty array for an agent with no memory directory.
+
+```json
+[
+  {
+    "name": "user-timezone",
+    "description": "Gerry is in Singapore (UTC+8)",
+    "type": "user",
+    "source": "agent",
+    "createdAt": "2026-09-05",
+    "updatedAt": "2026-09-05",
+    "size": 24
+  },
+  {
+    "name": "repo-pnpm",
+    "description": "The repo uses pnpm",
+    "type": "project",
+    "source": "sweep",
+    "createdAt": "2026-09-05",
+    "updatedAt": "2026-09-05",
+    "size": 18
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Memory name |
+| `description` | `string` | One-line summary |
+| `type` | `string` | `user`, `feedback`, `project`, or `reference` |
+| `source` | `string` | `agent`, `sweep`, `user`, or `import` |
+| `createdAt`, `updatedAt` | `string` | Calendar dates (`YYYY-MM-DD`), not timestamps |
+| `size` | `integer` | Content size |
+
+**Errors:** `401`, `404` (unknown agent).
+
+### GET /agents/:id/memory/:name
+
+Returns one memory. The record has the same fields as a list entry, with `content` (the full text)
+in place of `size`.
+
+**Errors:** `401`, `404` (unknown agent or memory).
+
+### DELETE /agents/:id/memory/:name
+
+Deletes one memory and returns its name:
+
+```json
+{ "name": "user-timezone" }
+```
+
+| Status | When |
+|--------|------|
+| `401` | Missing or wrong bearer (envelope body) |
+| `404` | Unknown agent or memory |
+| `400` | The memory store rejected the name |
+| `503` | Memory is disabled or not configured for this agent |
+| `500` | Unexpected failure |
+
+## Sub-agent definitions
+
+Sub-agent types an agent can spawn, and the definition files it owns. These routes use the
+`MobileApiError` envelope. A missing agent or definition is `404` `not_found`. The routes are
+mounted only when the HQ has a sub-agent definition registry. Without it they return `404`.
+
+### GET /agents/:id/subagent-types
+
+The resolved roster of sub-agent types this agent can spawn. It merges built-in types, plugin
+definitions, the agent's own definition directory, and the workspace directories by precedence,
+then narrows the result by the agent's `subagents.allowedTypes`. A definition that lost a name
+collision is listed right after the winner, with `shadowedBy` set. The full definition body is not
+included. Fetch it from the definition route when you need it.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `types` | `object[]` | The roster. See below. |
+| `unknownAllowedTypes` | `string[]` | Entries in `subagents.allowedTypes` that match no type. Not fatal, but if every entry is listed here the agent can spawn nothing, so surface it. |
+
+Each type has `name`, `description`, and `source` (`builtin`, `workspace`, `agent`, or `plugin`).
+It may also have `location`, `tools`, `disallowedTools`, `model`, `skills`, `maxTurns`,
+`background`, `isolation` (`"worktree"`), and `shadowedBy` (the winning definition's file path, or
+its source when it has no file).
+
+**Errors:** `401`, `404`.
+
+### GET /agents/:id/subagent-definitions
+
+Lists the `.md` files in the agent's own definition directory, sorted by file name. This is the
+only writable layer. Workspace and plugin definitions are read-only and appear only in the roster.
+Returns an empty list when the directory does not exist.
+
+```json
+{
+  "definitions": [
+    { "name": "code-reviewer", "file": "code-reviewer.md" }
+  ]
+}
+```
+
+**Errors:** `401`, `404`.
+
+### GET /agents/:id/subagent-definitions/:name
+
+Returns a definition's raw Markdown, byte for byte:
+
+```json
+{ "name": "code-reviewer", "raw": "---\nname: code-reviewer\n..." }
+```
+
+`:name` is the file name without `.md`. It must match `^[a-z0-9][a-z0-9-]*$`.
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | `:name` doesn't match the pattern |
+| `401` | `unauthorized` | |
+| `404` | `not_found` | No such agent or definition |
+
+### PUT /agents/:id/subagent-definitions/:name
+
+Creates or replaces `<name>.md` in the agent's definition directory.
+
+```json
+{ "raw": "---\nname: code-reviewer\ndescription: Review a diff\n---\nYou review diffs." }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `raw` | `string` | Required. The full Markdown, YAML frontmatter included. Must be non-blank and at most 262,144 bytes (UTF-8). |
+
+The body is parsed before anything is written. The frontmatter `name` must equal `:name`. On
+success the agent's roster is refreshed and the route returns:
+
+```json
+{ "ok": true, "name": "code-reviewer" }
+```
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | Bad `:name`, invalid JSON, missing or blank `raw`, or `raw` over the size limit |
+| `401` | `unauthorized` | |
+| `404` | `not_found` | No such agent |
+| `422` | `validation_failed` | `raw` is not a valid definition, or its frontmatter `name` differs from `:name` |
+
+### DELETE /agents/:id/subagent-definitions/:name
+
+Deletes the definition file and refreshes the roster. Returns `{ "ok": true, "name": "<name>" }`.
+
+**Errors:** `400` (bad `:name`), `401`, `404` (no such agent or definition).
+
+## Models
+
+### GET /models
+
+Lists the models available when configuring an agent. The list comes from the HQ's model cache,
+which is refreshed from the providers when it is stale.
+
+```json
+{
+  "models": [
+    {
+      "value": "anthropic/claude-sonnet-4-5",
+      "label": "Claude Sonnet 4.5",
+      "provider": "anthropic"
+    },
+    {
+      "value": "openai/gpt-5-mini",
+      "label": "GPT-5 mini",
+      "provider": "openai"
+    }
+  ],
+  "source": "live",
+  "errors": {},
+  "fetchedAt": "2026-07-12T00:00:00.000Z",
+  "supportedModelsReviewedAt": "2026-07-05"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `models` | `object[]` | `value` (a `provider/model` string to store in the agent's `model`), `label`, and `provider` |
+| `source` | `string` | `live` when fetched from providers, `bootstrap` when built from the bundled catalogs |
+| `errors` | `object` | Map of provider to error message for providers that failed to list models |
+| `fetchedAt` | `string` | ISO 8601 time of the last fetch |
+| `supportedModelsReviewedAt` | `string` | Date the bundled catalogs were last reviewed, or `unreviewed` |
+
+The Mobile API takes no query parameters here. Any query string returns `400` `validation_failed`
+(`Unknown models query parameter`).
+
+**Errors:** `400`, `401`.
+
+## Conversations
+
+A conversation belongs to one agent. The HQ stores its metadata, its messages, and an append-only
+event log, and every paired client sees the same state. Live turns stream over
+[HQ Chat WebSocket](/api-hq-chat-websocket). These routes read and manage the stored state.
+
+### The conversation object
+
+```json
+{
+  "id": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "agentId": "agent-01",
+  "agentName": "Mobile Helper",
+  "title": "Mobile launch check",
+  "revision": 2,
+  "status": "idle",
+  "activeTurnId": null,
+  "owningIssueId": "issue-01",
+  "projectId": "project-01",
+  "lastSeq": 5,
+  "lastMessagePreview": "Ready from the gateway.",
+  "createdAt": "2026-07-12T00:00:00.000Z",
+  "updatedAt": "2026-07-12T00:00:05.000Z",
+  "pendingCount": 0,
+  "pendingScheduling": "running",
+  "queueRevision": 0,
+  "kind": "user"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | UUID, or `sub_<ulid>` for a sub-agent conversation |
+| `agentId` | `string` | Owning agent |
+| `agentName` | `string` | The agent's name when the conversation was created |
+| `title` | `string` | Title. `New Conversation` until one is set. |
+| `revision` | `integer` | Starts at `1` and increases on every change. Used for `ETag` and `If-Match`. |
+| `status` | `string` | `idle`, `running`, `interrupted`, `archived`, or `deleted` |
+| `activeTurnId` | `string` or `null` | The running turn, if any |
+| `owningIssueId` | `string` or `null` | Linked issue |
+| `projectId` | `string` or `null` | Linked project |
+| `lastSeq` | `integer` | Sequence number of the latest event-log entry |
+| `lastMessagePreview` | `string` or `null` | Short preview of the latest message |
+| `createdAt`, `updatedAt` | `string` | ISO 8601 times |
+| `pendingCount` | `integer` | Queued inputs waiting to run |
+| `pendingScheduling` | `string` | `running` or `paused` |
+| `queueRevision` | `integer` | Revision of the pending queue |
+| `deletedAt` | `string` | Present only on a deleted conversation |
+| `kind` | `string` | `user`, or `subagent` for a sub-agent's own conversation |
+| `parentConversationId`, `parentTurnId`, `subagent` | | Present only when `kind` is `subagent`. `subagent` describes the child. See [Sub-agents](#sub-agents). |
+
+A client compares `title` against `New Conversation` to tell whether a conversation is still
+untitled.
+
+### ETag and If-Match
+
+`POST`, `GET`, `PATCH`, and `DELETE` on a single conversation return its revision as a quoted
+`ETag`:
+
+```http
+ETag: "2"
+```
+
+`PATCH` and `DELETE` require an `If-Match` header with the revision you last saw, in the same quoted
+form. The header must match `^"(0|[1-9][0-9]*)"$`. A missing or malformed header is `400`
+`validation_failed`. If the revision is stale, the HQ returns `409` `revision_conflict` with the
+current conversation in `details.current`, so you can merge and retry without another read:
+
+```json
+{
+  "code": "revision_conflict",
+  "error": "Conversation revision 1 is stale",
+  "retryable": false,
+  "details": {
+    "current": {
+      "id": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "agentId": "agent-01",
+      "agentName": "Mobile Helper",
+      "title": "Mobile launch check",
+      "revision": 2,
+      "status": "idle",
+      "activeTurnId": null,
+      "owningIssueId": "issue-01",
+      "projectId": "project-01",
+      "lastSeq": 5,
+      "lastMessagePreview": "Ready from the gateway.",
+      "createdAt": "2026-07-12T00:00:00.000Z",
+      "updatedAt": "2026-07-12T00:00:05.000Z",
+      "pendingCount": 0,
+      "pendingScheduling": "running",
+      "queueRevision": 0,
+      "kind": "user"
+    }
+  }
+}
+```
+
+### Deletion and archiving
+
+**Deleting** a conversation purges its messages, event log, pending inputs, and queued
+notifications, then keeps the row as a **tombstone**: `status: "deleted"`, a new `revision`, and
+`deletedAt`. Every sub-agent conversation beneath it is tombstoned too, even one that is still
+running. `GET /conversations/:id` still returns the tombstone. A further `PATCH` or `DELETE`
+returns `410` with code `not_found` and `retryable: false`.
+
+**Archiving** happens when the owning agent is deleted. The conversation moves to
+`status: "archived"` and stays readable, but `PATCH` and `DELETE` return `409`
+`validation_failed`, and new turns are refused.
+
+### Query parameter rules
+
+The three list routes (`GET /conversations`, `/messages`, and `/pending`) reject any query
+parameter they don't define, a parameter given more than once, and an empty value, all with `400`
+`validation_failed`. `limit` must be a positive integer no larger than the route's maximum. A cursor
+on `/conversations` or `/messages` that the HQ can't decode is `400`
+`Invalid pagination cursor`. The `/pending` cursor is a pending item ID: an unknown ID restarts the
+listing from the first item.
+
+### GET /conversations
+
+Lists conversations, most recently updated first. Deleted conversations and sub-agent
+conversations are left out. Archived conversations are included.
+
+| Query parameter | Type | Description |
+|-----------------|------|-------------|
+| `agentId` | `string` | Optional. Only this agent's conversations. |
+| `limit` | `integer` | Optional. `1` to `100`, default `50`. |
+| `cursor` | `string` | Optional. `nextCursor` from the previous page. |
+
+```json
+{
+  "items": [
+    {
+      "id": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "agentId": "agent-01",
+      "agentName": "Mobile Helper",
+      "title": "Mobile launch check",
+      "revision": 2,
+      "status": "idle",
+      "activeTurnId": null,
+      "owningIssueId": "issue-01",
+      "projectId": "project-01",
+      "lastSeq": 5,
+      "lastMessagePreview": "Ready from the gateway.",
+      "createdAt": "2026-07-12T00:00:00.000Z",
+      "updatedAt": "2026-07-12T00:00:05.000Z",
+      "pendingCount": 0,
+      "pendingScheduling": "running",
+      "queueRevision": 0,
+      "kind": "user"
+    }
+  ],
+  "nextCursor": "opaque:conversation:cursor:1"
+}
+```
+
+`nextCursor` is `null` on the last page.
+
+**Errors:** `400`, `401`.
+
+### POST /conversations
+
+Creates a conversation. `requestId` makes the call idempotent: repeating a request with the same
+`requestId` returns the conversation that request first created, instead of making a new one.
+
+```json
+{
+  "agentId": "agent-01",
+  "requestId": "request-01",
+  "title": "Mobile launch check",
+  "owningIssueId": "issue-01",
+  "projectId": "project-01"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agentId` | `string` | Required. The owning agent. |
+| `requestId` | `string` | Required. A client-generated key, unique per intended conversation. |
+| `title` | `string` | Optional. Defaults to `New Conversation`. |
+| `owningIssueId` | `string` | Optional |
+| `projectId` | `string` | Optional |
+
+Every string must be non-blank and is trimmed. Returns `201` with the conversation object and its
+`ETag`, including when an earlier request with the same `requestId` already created it. A
+`conversation:changed` event is sent on [`/events`](#get-%2Fevents).
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | Invalid JSON, not an object, an unknown field, or a blank or non-string value |
+| `401` | `unauthorized` | |
+| `404` | `not_found` | No agent with that `agentId` |
+
+### GET /conversations/:id
+
+Returns the conversation object and its `ETag`. Deleted conversations are returned as tombstones.
+Sub-agent conversations can be read here by their `sub_` ID.
+
+**Errors:** `401`, `404`.
+
+### PATCH /conversations/:id
+
+Updates the title or links. Requires `If-Match`. Send at least one field.
+
+```json
+{
+  "title": "Mobile launch verified",
+  "owningIssueId": null,
+  "projectId": "project-01"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | `string` | Optional. Non-blank, trimmed. |
+| `owningIssueId` | `string` or `null` | Optional. `null` clears the link. |
+| `projectId` | `string` or `null` | Optional. `null` clears the link. |
+
+Returns the updated conversation and its new `ETag`, and sends `conversation:changed`.
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | Missing or malformed `If-Match`, invalid JSON, an empty object, an unknown field, or a blank value |
+| `401` | `unauthorized` | |
+| `404` | `not_found` | No such conversation |
+| `409` | `validation_failed` | The conversation is archived |
+| `409` | `revision_conflict` | `If-Match` is stale. `details.current` holds the current conversation. |
+| `410` | `not_found` | The conversation was deleted |
+
+### DELETE /conversations/:id
+
+Deletes the conversation's content and returns the tombstone with its new `ETag`. Requires
+`If-Match`. Sends `conversation:deleted` on [`/events`](#get-%2Fevents).
+
+The tombstone is the conversation object with `status: "deleted"`, `activeTurnId: null`, a
+`revision` one higher than before, and `deletedAt` set.
+
+The HQ checks these conditions in order and returns the first that applies:
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | Missing or malformed `If-Match` |
+| `404` | `not_found` | No such conversation |
+| `410` | `not_found` | Already deleted |
+| `409` | `validation_failed` | The conversation is archived |
+| `409` | `conversation_busy` | A turn is running. `details.activeTurnId` names it. Stop the turn, then retry. |
+| `409` | `revision_conflict` | `If-Match` is stale |
+
+A `401` is returned before any of these when the bearer is wrong.
+
+### GET /conversations/:id/messages
+
+Pages through the conversation's stored messages, newest page first. Items within a page are in
+chronological order (ascending `ordinal`). Pass `nextCursor` as `before` to get the page of older
+messages.
+
+| Query parameter | Type | Description |
+|-----------------|------|-------------|
+| `limit` | `integer` | Optional. `1` to `200`, default `100`. |
+| `before` | `string` | Optional. `nextCursor` from the previous page. |
+
+```json
+{
+  "items": [
+    {
+      "id": "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "turnId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "ordinal": 1,
+      "role": "user",
+      "status": "completed",
+      "content": {
+        "type": "user",
+        "text": "Is the mobile connection ready?"
+      },
+      "createdAt": "2026-07-12T00:00:01.000Z",
+      "updatedAt": "2026-07-12T00:00:01.000Z",
+      "origin": "user"
+    },
+    {
+      "id": "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "turnId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "ordinal": 2,
+      "role": "assistant",
+      "status": "completed",
+      "content": {
+        "type": "assistant",
+        "events": [
+          {
+            "type": "text_delta",
+            "text": "Ready from the gateway."
+          }
+        ]
+      },
+      "createdAt": "2026-07-12T00:00:02.000Z",
+      "updatedAt": "2026-07-12T00:00:05.000Z",
+      "origin": "user"
+    }
+  ],
+  "nextCursor": null,
+  "throughSeq": 5
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `items[].role` | `string` | `user` or `assistant` |
+| `items[].status` | `string` | `accepted`, `streaming`, `completed`, `cancelled`, `failed`, or `interrupted` |
+| `items[].content` | `object` | One of the three content shapes below |
+| `items[].origin` | `string` | Optional. `user`, `notification` (a turn the HQ started, such as a background sub-agent reporting back), or `parent` |
+| `nextCursor` | `string` or `null` | Cursor for older messages, or `null` when there are none |
+| `throughSeq` | `integer` | The conversation's `lastSeq` at read time. Replay from here to catch up. |
+
+Message content:
+
+| `content.type` | Fields | Description |
+|----------------|--------|-------------|
+| `user` | `text`, optional `images` | What the user sent. Each image has `mediaType` (`image/jpeg`, `image/png`, `image/gif`, or `image/webp`) and base64 `data`. |
+| `assistant` | `events` | The agent's events for the turn, rebuilt from the event log. Ignore event types you don't know. |
+| `notice` | `kind`, `text` | A standalone notice, such as `Learned: write-files`. `kind` is `skill_learned` or `memory_saved`. Notices use the `assistant` role. |
+
+**Errors:** `400`, `401`, `404`. A deleted conversation returns `404` here.
+
+### GET /conversations/:id/pending
+
+Pages through the conversation's queued inputs, the Follow Up and priority messages waiting for the
+current turn to finish. Priority items come before follow-ups. A conversation holds at most 100
+pending inputs.
+
+| Query parameter | Type | Description |
+|-----------------|------|-------------|
+| `limit` | `integer` | Optional. `1` to `100`, default `50`. |
+| `cursor` | `string` | Optional. `nextCursor` from the previous page. |
+
+```json
+{
+  "items": [
+    {
+      "id": "818f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "commandId": "218f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "kind": "follow_up",
+      "version": 1,
+      "text": "Also compare the migration cost.",
+      "state": "pending",
+      "createdAt": "2026-09-15T05:00:00.000Z",
+      "updatedAt": "2026-09-15T05:00:00.000Z"
+    }
+  ],
+  "nextCursor": null,
+  "queue": {
+    "revision": 4,
+    "scheduling": "running",
+    "pendingCount": 1,
+    "items": [
+      {
+        "id": "818f0f4a-5c42-7a8b-9c01-1234567890ab",
+        "commandId": "218f0f4a-5c42-7a8b-9c01-1234567890ab",
+        "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+        "kind": "follow_up",
+        "version": 1,
+        "text": "Also compare the migration cost.",
+        "state": "pending",
+        "createdAt": "2026-09-15T05:00:00.000Z",
+        "updatedAt": "2026-09-15T05:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `items[].kind` | `string` | `priority` or `follow_up` |
+| `items[].version` | `integer` | Increases on each edit. Chat commands that edit or remove an item must name it. |
+| `items[].state` | `string` | `pending`, or `claimed` once a turn has taken it (`claimedTurnId` is then set) |
+| `items[].images` | `object[]` | Optional. Same shape as message images. |
+| `queue` | `object` | Snapshot of the whole queue: `revision`, `scheduling` (`running` or `paused`), `pendingCount`, and every `items` entry |
+
+Items are added, edited, and removed with chat commands on the WebSocket. See
+[HQ Chat WebSocket](/api-hq-chat-websocket).
+
+**Errors:** `400`, `401`, `404`.
+
+## Sub-agents
+
+A sub-agent is a child agent that a conversation's agent starts. Each child runs in its own
+conversation, with `kind: "subagent"` and an ID of the form `sub_<ulid>`. That ID is also the
+sub-agent's ID in the routes below. These routes use the `MobileApiError` envelope. They are
+mounted only when the HQ runs the sub-agent coordinator. Without it they return `404`.
+
+A sub-agent conversation's `subagent` field describes the child:
+
+```json
+{
+  "type": "code-reviewer",
+  "name": "reviewer",
+  "status": "running",
+  "description": "Review the diff",
+  "prompt": "Review the diff and report findings",
+  "model": "anthropic/claude-opus-4",
+  "background": true,
+  "isolation": "worktree",
+  "depth": 1,
+  "startedAt": "2026-07-12T00:01:00.000Z",
+  "usage": {
+    "inputTokens": 1204,
+    "outputTokens": 318
+  },
+  "toolCallCount": 7,
+  "oneShot": false
+}
+```
+
+`status` is one of `running`, `waiting_input`, `done`, `failed`, `cancelled`, `interrupted`, or
+`max_turns`. The last five are terminal. After an HQ restart every unfinished child is marked
+`interrupted`. The object may also carry `endedAt`, `report`, and `workspace`.
+
+### GET /conversations/:id/subagents
+
+Lists a conversation's sub-agents, oldest first, with enough detail to render a tasks panel
+without opening each child. `report` is scanned before it leaves the HQ: control tags are
+neutralized and role prefixes escaped, because clients render it directly.
+
+```json
+{
+  "subagents": [
+    {
+      "id": "sub_01JQ8Z3K7M2N4P6R8T0V2W4X6Y",
+      "name": "scout",
+      "type": "Explore",
+      "description": "Survey the repo",
+      "status": "done",
+      "background": false,
+      "depth": 1,
+      "startedAt": "2026-09-06T09:00:00.000Z",
+      "endedAt": "2026-09-06T09:02:31.000Z",
+      "usage": { "inputTokens": 4821, "outputTokens": 903 },
+      "toolCallCount": 12,
+      "report": "The auth flow lives in apps/gateway/src/auth.ts.",
+      "oneShot": true
+    },
+    {
+      "id": "sub_01JQ8Z3K7M2N4P6R8T0V2W4X71",
+      "name": "reviewer",
+      "type": "general-purpose",
+      "description": "Review the diff",
+      "status": "running",
+      "background": true,
+      "depth": 2,
+      "startedAt": "2026-09-06T09:05:00.000Z",
+      "toolCallCount": 0,
+      "oneShot": false
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | The child's conversation ID |
+| `name` | `string` | Optional display name |
+| `type` | `string` | The sub-agent type it was spawned as |
+| `description` | `string` | Short task description |
+| `status` | `string` | See above |
+| `background` | `boolean` | Whether it runs in the background |
+| `depth` | `integer` | Nesting depth |
+| `startedAt`, `endedAt` | `string` | ISO 8601 times. `endedAt` is absent while running. |
+| `usage` | `object` | Optional. `inputTokens` and `outputTokens`. |
+| `toolCallCount` | `integer` | Tool calls so far |
+| `report` | `string` | The child's scanned output. Absent until it reaches a terminal status. |
+| `oneShot` | `boolean` | `true` for types that can't be resumed, such as `Explore` and `Plan` |
+
+The route returns at most the 100 newest children.
+
+**Errors:** `401`, `404` (no such conversation).
+
+### POST /subagents/:id/stop
+
+Cancels the sub-agent and every descendant beneath it, leaves first. Takes no body.
+
+```json
+{ "ok": true, "status": "cancelled" }
+```
+
+`status` is the child's terminal status afterward. It can differ from `cancelled` if the child
+finished on its own while the stop was in progress.
+
+| Status | Code | When |
+|--------|------|------|
+| `401` | `unauthorized` | |
+| `404` | `not_found` | No such sub-agent |
+| `409` | `validation_failed` | The sub-agent already reached a terminal status, so you learn which of the two won the race |
+
+### POST /subagents/:id/resume
+
+Sends a message to the sub-agent as its parent would, with the same effect as the agent's
+`send_message` tool. A running child queues the message as its next turn. A finished child,
+including one interrupted by an HQ restart, is resumed on its own conversation.
+
+```json
+{ "message": "Also check the migrations.", "requestId": "req-42" }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message` | `string` | Required. Non-blank. |
+| `requestId` | `string` | Optional. 1 to 256 characters. Echoed as `requestId` on the `accepted` chat frame of the turn this message starts. An answer to a question the child is waiting on doesn't start a turn and gets no echo. |
+
+```json
+{ "ok": true, "status": "running", "mode": "queued" }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ok` | `boolean` | Whether the message was delivered |
+| `status` | `string` | The child's status: `spawning`, or any sub-agent status |
+| `mode` | `string` | `queued` when the child was running, `resumed` when a new turn was started |
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | Invalid JSON, or a blank `message` or invalid `requestId` |
+| `401` | `unauthorized` | |
+| `404` | `not_found` | No such sub-agent |
+| `409` | `validation_failed` | A one-shot type, a child at its message cap, a child whose permissions can no longer be rebuilt, or a child with no parent |
+
+## Replay and events
+
+### GET /agents/:agentId/conversations/:conversationId/events
+
+Returns the conversation's event-log entries with `seq` greater than `sinceSeq`, in `seq` order.
+Use it to catch up after a dropped chat connection, starting from the last `seq` you saw or from
+`throughSeq` on a messages page.
+
+| Query parameter | Type | Description |
+|-----------------|------|-------------|
+| `sinceSeq` | `integer` | Non-negative. Defaults to `0`, which returns the whole log. |
+
+```json
+{
+  "entries": [
+    {
+      "seq": 1,
+      "msgId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "agentId": "agent-01",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "timestamp": "2026-07-12T00:00:01.000Z",
+      "payload": {
+        "type": "accepted",
+        "userMessageId": "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+        "assistantMessageId": "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+        "revision": 2
+      }
+    },
+    {
+      "seq": 2,
+      "msgId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "agentId": "agent-01",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "timestamp": "2026-07-12T00:00:02.000Z",
+      "payload": {
+        "type": "event",
+        "event": {
+          "type": "text_delta",
+          "text": "Ready "
+        }
+      }
+    },
+    {
+      "seq": 5,
+      "msgId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+      "agentId": "agent-01",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "timestamp": "2026-07-12T00:00:05.000Z",
+      "payload": {
+        "type": "done",
+        "outcome": "completed"
+      }
+    }
+  ]
+}
+```
+
+`msgId` is the turn ID. `payload` is one of:
+
+| `payload.type` | Fields | Description |
+|----------------|--------|-------------|
+| `accepted` | `userMessageId`, `assistantMessageId`, `revision`, and optionally `origin` and `kind` | The turn was accepted. `origin` and `kind` are not yet written to the log, so read them from the message and conversation instead. |
+| `event` | `event` | One agent event. Ignore event types you don't know. |
+| `done` | optional `outcome` (`completed` or `cancelled`) | The turn ended |
+| `error` | `error`, and optionally `code` and `retryable` | The turn failed |
+
+A deleted conversation returns `{ "entries": [] }`. So does an unknown conversation ID under an
+agent that exists.
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `validation_failed` | A query parameter other than `sinceSeq`, `sinceSeq` repeated, or a value that isn't a non-negative integer |
+| `401` | `unauthorized` | |
+| `404` | `not_found` | The conversation belongs to a different agent (`Conversation not found`), or neither the conversation nor the agent exists (`Agent not found`) |
+
+### GET /events
+
+A Server-Sent Events stream that tells clients when to refresh. Keep it open and re-read a
+conversation when its revision is newer than the one you hold.
+
+```http
+GET /mobile/v1/events HTTP/1.1
+Authorization: Bearer <mobile-token>
+Accept: text/event-stream
+```
+
+The response has `Content-Type: text/event-stream` and `Cache-Control: no-cache`. Each event has an
+`event:` name equal to the payload's `type`, and a JSON `data:` line:
+
+```text
+event: conversation:changed
+data: {"type":"conversation:changed","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","revision":2}
+
+event: conversation:deleted
+data: {"type":"conversation:deleted","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","revision":3}
+```
+
+| Event | Sent when |
+|-------|-----------|
+| `conversation:changed` | A conversation was created, updated, retitled automatically, archived, given a notice, or changed as a turn ran. `revision` is the new revision. |
+| `conversation:deleted` | A conversation was deleted. `revision` is the tombstone's revision. |
+
+The same stream also carries the HQ's other change events, such as agent, channel, plugin, and
+swarm updates. Ignore any event name you don't handle.
+
+A `: keepalive` comment line is sent every 30 seconds. Events have no `id:` field, so the stream
+can't be resumed with `Last-Event-ID`. After reconnecting, re-list conversations and compare
+revisions.
+
+Through the relay, an open stream counts against the HQ's concurrent-stream cap. See
+[Relay API](/api-relay#rate-limits).
+
+**Errors:** `401`.
+
+## Speech
+
+Transcription and speech synthesis through the HQ's configured speech provider. Check for the
+`speech-v1` capability in [`GET /health`](#get-%2Fhealth) before calling these routes. When the HQ
+has no speech service at all, the `/speech` routes are not mounted and return `404`.
+
+Speech routes use the `MobileApiError` envelope. Provider failures pass their own codes through
+unchanged:
+
+| Code | Status | Retryable | Meaning |
+|------|--------|-----------|---------|
+| `invalid` | `400` | No | The provider rejected the input |
+| `unauthorized` | `401` | No | The provider rejected the HQ's speech credential. This is not a bearer failure. |
+| `too_large` | `413` | No | Audio over 8 MiB decoded, or a request body over the size limit |
+| `too_long` | `413` | No | Synthesis text over 4,000 characters |
+| `provider` | `502` | No | The provider refused or failed |
+| `network` | `502` | Yes | The call to the provider failed |
+| `unavailable` | `503` | Yes | No provider is configured for this kind. Adding a credential in Mission Control fixes it. |
+
+Every body-bearing speech route checks `Content-Length` before reading the body and returns `413`
+`too_large` (`request body too large`) when it is over the limit: 12 MB for
+`POST /speech/transcriptions`, 64 KiB for `PATCH /speech/config` and `POST /speech/speech`.
+
+### GET /speech/config
+
+Returns the HQ's speech configuration and each provider's availability.
+
+```json
+{
+  "config": {
+    "stt": {
+      "provider": "openrouter",
+      "model": "openai/whisper-large-v3",
+      "language": "en"
+    },
+    "tts": {
+      "provider": "openrouter",
+      "model": "minimax/speech-2.8-turbo",
+      "voice": "English_expressive_narrator",
+      "speed": 1
+    },
+    "realtime": {
+      "provider": null
+    }
+  },
+  "providers": [
+    {
+      "id": "openrouter",
+      "capabilities": {
+        "transcription": true,
+        "speech": true,
+        "realtime": false
+      },
+      "available": true
+    },
+    {
+      "id": "realtime",
+      "capabilities": {
+        "transcription": false,
+        "speech": false,
+        "realtime": true
+      },
+      "available": false,
+      "reason": "no_provider_offers_realtime"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `config.stt` | Transcription: `provider`, `model`, and optional `language`. `language` is absent when the provider detects the language itself. |
+| `config.tts` | Synthesis: `provider`, `model`, `voice`, and optional `speed` (`0.25` to `4`) |
+| `config.realtime.provider` | Realtime provider, or `null` for none |
+| `providers[]` | One entry per provider the HQ can build, plus a `realtime` entry. `reason` (`no_credential` or `no_provider_offers_realtime`) is present only when `available` is `false`. |
+
+**Errors:** `401`.
+
+### PATCH /speech/config
+
+Merges a partial configuration and returns the result in the same shape as `GET /speech/config`.
+The merge is shallow per section: an omitted key keeps its current value.
+
+```json
+{
+  "stt": {
+    "model": "openai/whisper-large-v3",
+    "language": "en"
+  },
+  "tts": {
+    "voice": "nova",
+    "speed": 1.25
+  },
+  "realtime": {
+    "provider": null
+  }
+}
+```
+
+- `stt` accepts `provider`, `model`, and `language`. Set `language` to `null` to clear it back to
+  the provider's own detection: `{ "stt": { "language": null } }`.
+- `tts` accepts `provider`, `model`, `voice`, and `speed`.
+- `realtime`, when present, must include `provider`, which may be `null`. Omitting the key inside a
+  present `realtime` object is a `400`.
+- An unknown key anywhere in the body is a `400`, not a silent drop.
+
+**Errors:** `400`, `401`, `413`.
+
+### GET /speech/models
+
+Lists the configured provider's models for one kind of speech. Results are cached for an hour per
+provider.
+
+| Query parameter | Type | Description |
+|-----------------|------|-------------|
+| `kind` | `string` | Required. `transcription` or `speech`. Anything else is `400`. |
+
+```json
+{
+  "models": [
+    {
+      "id": "openai/whisper-large-v3",
+      "name": "Whisper Large v3",
+      "kind": "transcription"
+    },
+    {
+      "id": "minimax/speech-2.8-turbo",
+      "name": "MiniMax: Speech 2.8 Turbo",
+      "kind": "speech",
+      "voices": ["English_expressive_narrator", "English_radiant_girl"]
+    }
+  ]
+}
+```
+
+`voices` is present only on `speech` models that have named voices.
+
+**Errors:** `400`, `401`, `502`, `503`.
+
+### POST /speech/transcriptions
+
+Transcribes one recorded clip. The audio is sent as base64 inside JSON, not as multipart.
+
+```json
+{
+  "audio": "UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQgAAAAAAAAAAAAAAA==",
+  "format": "wav",
+  "language": "en"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `audio` | `string` | Required. Standard base64: only `A-Za-z0-9+/=`, no newlines, length a multiple of 4. Must decode to between 1 byte and 8 MiB. |
+| `format` | `string` | Required. `wav`, `m4a`, `mp3`, `flac`, `ogg`, `webm`, or `aac`. |
+| `language` | `string` | Optional language hint for the provider |
+
+The clip must also be at most 60 seconds long.
+
+```json
+{
+  "text": "Ship the speech routes.",
+  "durationSeconds": 2.5
+}
+```
+
+`durationSeconds` is present only when the provider reports it.
+
+**Errors:** `400`, `401`, `413`, `502`, `503`.
+
+### POST /speech/speech
+
+Synthesizes speech from text. This is the only Mobile API route whose success body is not JSON.
+
+```json
+{ "text": "Ship the speech routes." }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | `string` | Required. 1 to 4,000 characters. Longer text is `413` `too_long`. |
+
+Send `Accept: audio/mpeg, audio/wav`. The response is one of:
+
+- `Content-Type: audio/mpeg`, streamed as the provider produces it.
+- `Content-Type: audio/wav`, sent whole, when the configured model only produces raw PCM.
+
+An error raised before the first audio chunk is returned as a JSON `MobileApiError`, so be ready to
+decode JSON on this route too.
+
+**Errors:** `400`, `401`, `413`, `502`, `503`.
+
+## Chat WebSocket
+
+Live turns, steering, Follow Up, and voice run over the chat WebSocket at `/ws/chat`, on the same
+host as the Mobile API: the LAN listener or the relay hostname. The frame protocol is documented in
+[HQ Chat WebSocket](/api-hq-chat-websocket). This section covers only connecting.
+
+The socket authenticates with the same mobile bearer. The HQ checks, in order:
+
+1. If an `Authorization` header is present and non-empty, it must be `Bearer <mobile-token>`. Nothing
+   else is considered.
+2. Otherwise, a `?token=<mobile-token>` query parameter, or a `?ticket=<ticket>` from
+   [`POST /ws-ticket`](#post-%2Fws-ticket).
+
+On failure the upgrade completes and the HQ closes the socket with code `4001` `Unauthorized`.
+
+Native clients should send the `Authorization` header. Browsers can't set headers on a WebSocket
+upgrade, so they mint a ticket over HTTP and pass it in the URL, which keeps the long-lived bearer
+out of URLs and logs. Through the relay, browsers pass the relay credential as a WebSocket
+subprotocol. See [Relay API](/api-relay#websocket-%2Fws%2Fchat).
+
+### POST /ws-ticket
+
+Mints a single-use ticket for one WebSocket upgrade. Takes no body.
+
+```json
+{ "ticket": "0123456789abcdef0123456789abcdef", "expiresAt": "2026-08-29T12:00:30Z" }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ticket` | `string` | Random ticket. The HQ issues 32 random bytes as 64 hex characters. |
+| `expiresAt` | `string` | ISO 8601 expiry, 30 seconds after issue |
+
+Use it straight away:
+
+```text
+wss://<gatewayId>.<zone>/ws/chat?ticket=<ticket>
+```
+
+- A ticket works once. Redeeming it removes it, whether or not it had expired.
+- It is honored only when the upgrade carries no `Authorization` header. If a header is present,
+  the header alone decides and the ticket is left unused.
+- One ticket store serves the whole HQ, so a ticket minted through the relay also works on the LAN
+  listener and the other way round.
+
+**Errors:** `401`.
+
+## Steer and Follow Up (Mobile API v2)
+
+<Note>
+The v2 API ships with the steer-and-follow-up release. Until that release reaches your HQ, `/mobile/v2` routes return 404 and the v1 surface described on the Mobile API page is the only one available.
+</Note>
+
+
+Current clients probe `GET /mobile/v2/health` and require the `chat-input-queue-v1` capability.
+Verify `/mobile/v2/identity` with the phone-scoped Mobile bearer before opening conversations.
+The direct mobile listener and hosted relay expose both `/mobile/v1` and `/mobile/v2`. V2 uses the
+same Mobile bearer and, through the relay, the same per-device relay credential. Administrative
+management bearers are not accepted by either mobile namespace.
+
+V1 remains available with its existing DTOs, cursor, and pending-work commands. Select v1 only when
+the v2 health resource is explicitly unavailable. Do not downgrade after a rejected credential,
+wrong HQ identity, malformed response, or TLS verification failure. A Desktop local conversation
+retains its existing connection-owned behavior.
+
+### Snapshot and replay
+
+Paths in this table are relative to `/mobile/v2` and require the Mobile bearer:
+
+| Route | Result |
+|-------|--------|
+| `GET /conversations/:id/bootstrap` | Canonical conversation, messages, pending inputs, queue state, and `v2ThroughSeq` |
+| `GET /conversations/:id/messages` | V2 messages with run, segment, and delivery identities; accepts `limit` and `before` |
+| `GET /agents/:agentId/conversations/:conversationId/events?sinceV2Seq=N` | `{ frames, v2ThroughSeq }` after the stored v2 cursor |
+| `GET /events` | Conversation cache invalidations over SSE |
+
+The management-auth equivalents use `/conversations/:id/bootstrap`,
+`/conversations/:id/messages-v2`, and
+`/agents/:agentId/conversations/:conversationId/events-v2?sinceV2Seq=N` on the loopback management
+server. The older unprefixed message and event routes keep their v1 format.
+
+V2's `v2Seq` and v1's `seq` are independent, dense sequences. Never send `sinceSeq` to the v2 replay
+route or infer a v2 cursor from a v1 frame. Store a v2 cursor only after applying its frame. On
+compaction, read a fresh bootstrap and preserve already loaded history by canonical message ID.
+
+### Subscribe before sending
+
+Connect to `/ws/chat` using the existing authenticated native socket or a single-use ticket. The
+first frame selects v2:
+
+```json
+{"type":"hello","contractVersion":2,"capabilities":["chat-input-queue-v1"]}
+```
+
+Wait for `hello_ack`, then subscribe from the bootstrap's watermark:
+
+```json
+{"type":"subscribe_conversation","id":"00000000-0000-4000-8000-000000000002","agentId":"agent-01","conversationId":"00000000-0000-4000-8000-000000000001","sinceV2Seq":0}
+```
+
+`conversation_subscribed` includes the replay watermark. The subscription lasts across runs; a
+terminal frame does not close it. Reconnect with the last applied `v2Seq`. A socket that has not
+negotiated v2 retains the v1 protocol. Malformed negotiation or protocol frames close with `1002`;
+application command rejection uses `command_rejected` without closing a healthy subscription.
+
+### Commands and durable acknowledgements
+
+Every command has a client-generated `id`. An enqueued input also has a distinct `inputId`. Reuse
+both identities and exactly the same payload when retrying an uncertain command. Reusing an ID for
+a different payload is rejected. A normal `message.id` remains the outer run identity.
+
+| Command | Required correlation | Behavior |
+|---------|----------------------|----------|
+| `message` | Agent, channel, conversation, text, `resumable: true` | Start a run when the conversation is available |
+| `enqueue_input` | Agent, channel, conversation, `inputId`, text, `behavior` | `steer` guides the active run; `followUp` queues a later run |
+| `edit_follow_up` | Conversation, input, `expectedRevision`, text | Update an item that has not started; images replace its attachment set |
+| `remove_follow_up` | Conversation, input, `expectedRevision` | Remove a queued item |
+| `resume_follow_ups` | Conversation, `expectedQueueRevision` | Resume a paused queue |
+| `cancel` | `id` of the exact active run | Stop that run and advance remaining v2 Follow Ups |
+
+Steer additionally requires `expectedActiveTurnId`. It cannot silently target a different run.
+A successful enqueue emits `input_accepted`; edits and removals emit `input_updated` and
+`input_removed`. `input_delivered` links the accepted input to its run, segment, and message IDs.
+`queue_paused` and `queue_resumed` publish queue state. Rejections preserve the submitted draft;
+a stale item revision requires a refresh before another edit or removal.
+
+A Steer is delivered only at a safe agent boundary. Its permanent user row records `pending`,
+`delivered`, or `not_delivered`; delivered rows are labeled **Steered**. Each delivered Steer starts
+a new assistant segment inside the same outer run. A late Steer never becomes a future Follow Up.
+Follow Ups run in order, one at a time. Failure pauses the remaining queue until **Resume Follow
+Ups**. The v1 compatibility command `stop_conversation` retains its older Stop-pauses behavior, and
+`interrupt_and_send` retains priority interruption; v2 `cancel` advances the queue.
+
+V2 permits 20 pending Follow Ups and 20 pending Steers per conversation, with a combined pending
+payload limit of 100 MiB. Each input accepts up to four JPEG, PNG, GIF, or WebP images: 5 MiB per
+image and 12 MiB combined decoded image data. Sending or editing beyond these limits is rejected.

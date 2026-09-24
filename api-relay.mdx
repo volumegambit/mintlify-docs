@@ -1,0 +1,541 @@
+---
+title: "Relay API"
+description: "Wire reference for the DashSquad relay: the device-facing edge, the HQ tunnel, the mux frame format, and the admin API."
+---
+
+The relay is a reverse tunnel between devices and HQs. An HQ dials **out** to the relay over one
+persistent WebSocket, and the relay forwards each device request down that socket as a
+multiplexed stream. The HQ replays every stream against its own loopback servers, so its
+authentication and routes are unchanged. See [Remote Access](/remote-access) for the user-facing
+setup.
+
+The relay routes traffic and never authenticates app requests itself. It checks that a device may
+reach an HQ (the pairing credential) and that an HQ may register (the dial-in credential).
+Everything else, including the HQ's own Mobile bearer, is forwarded to the HQ.
+
+```text
+ Device ──HTTPS/WSS──▶ Relay ◀──WSS /gw/<gatewayId>── HQ (dials out, behind NAT)
+                        │                              │
+                        └──── one stream per request ──┘──▶ 127.0.0.1 management / chat servers
+ Control plane ──POST /admin/*──▶ Relay
+```
+
+| Caller | Surface | Authenticates with |
+|--------|---------|--------------------|
+| Device (iOS, Android, web) | `/mobile/v1` HTTP and `/ws/chat` WebSocket on `<gatewayId>.<zone>` | Pairing credential, plus the HQ's Mobile bearer (checked by the HQ) |
+| HQ | `/gw/<gatewayId>` WebSocket | Shared relay token, or a signed dial token plus a holder-of-key proof |
+| Control plane or operator | `/admin/*` HTTP | Admin secret |
+
+The control plane's own routes, including dial-token minting and refresh, are documented in
+[Relay Control Plane API](/api-relay-control-plane). The forwarded HQ routes are documented in
+[HQ Mobile API](/api-hq-mobile) and [HQ Chat WebSocket](/api-hq-chat-websocket).
+
+## Authentication
+
+| Scheme | Presented as | Checked by | Failure |
+|--------|--------------|------------|---------|
+| Pairing credential | `x-dash-relay-credential` header, or the `dash.relay-credential.<credential>` WebSocket subprotocol | Relay, against its credential store | HTTP `401`, or WebSocket close `4401` |
+| Shared relay token | `Authorization: Bearer <relay-token>` on the HQ dial-in | Relay (constant-time compare) | WebSocket close `4401` |
+| Dial token and proof (hosted mode) | `Authorization: Bearer <dial-token>` and `X-Gateway-Proof: <assertion>` on the HQ dial-in | Relay, offline against the control plane's public key | WebSocket close `4401` |
+| Admin secret | `Authorization: Bearer <admin-secret>` on `/admin/*` | Relay (constant-time compare) | HTTP `401` |
+| HQ Mobile bearer | `Authorization` header on device requests | **The HQ.** The relay forwards it untouched | The HQ's own error |
+
+### Modes
+
+The relay's startup configuration selects one of three modes. Each mode decides how HQs are
+admitted and whether pairing credentials are enforced.
+
+| Mode | Selected by | HQ admission | Pairing credential | `/admin/*` |
+|------|-------------|--------------|--------------------|------------|
+| Development | `RELAY_TOKEN` only | Shared relay token | **Not checked.** Any value, or none, is accepted | Returns `404` |
+| Self-hosted | `RELAY_TOKEN` and `RELAY_ADMIN_SECRET` | Shared relay token | Checked against an in-memory store | Enabled |
+| Hosted | `RELAY_DIAL_TOKEN_PUBLIC_KEY` | Signed dial token and holder-of-key proof. `RELAY_TOKEN` is ignored | Checked against a durable SQLite store of credential hashes | Enabled only if `RELAY_ADMIN_SECRET` is also set |
+
+The self-hosted store is in memory, so a relay restart drops every pairing and each device needs a
+newly provisioned credential. The hosted store survives restarts and keeps only SHA-256 hashes.
+
+## Route index
+
+| Method | Path | Caller | Auth | Purpose |
+|--------|------|--------|------|---------|
+| Any | `/mobile/v1` and `/mobile/v1/*` on `<gatewayId>.<zone>` | Device | Pairing credential | Forwarded to the HQ management server |
+| `OPTIONS` | `/mobile/v1` and `/mobile/v1/*` on `<gatewayId>.<zone>` | Browser | None | CORS preflight, forwarded to the HQ |
+| `GET` (WebSocket) | `/ws/chat` on `<gatewayId>.<zone>` | Device | Pairing credential | Bridged to the HQ chat server |
+| `GET` (WebSocket) | `/gw/:gatewayId` | HQ | Relay token, or dial token and proof | Registers the HQ's tunnel |
+| `POST` | `/admin/pairings` | Control plane | Admin secret | Provision a pairing credential |
+| `POST` | `/admin/pairings/revoke` | Control plane | Admin secret | Revoke one or all pairing credentials |
+| `POST` | `/admin/gateways/revoke` | Control plane | Admin secret | Force-close an HQ's tunnel |
+
+Every other path returns `404`. The relay has no health route. See [Liveness](#liveness).
+
+## Device-facing surface
+
+### Host routing
+
+The relay takes the HQ's `gatewayId` from the **first DNS label** of the `Host` header, ignoring any
+port. `demo.relay.example.com` routes to `demo`. The rest of the hostname is not checked, so the
+zone is set by your DNS and TLS terminator, not by the relay.
+
+`/admin/*` and `/gw/*` are matched by path before host routing and work on any hostname that
+reaches the relay.
+
+### Path rules
+
+Only two targets are forwarded:
+
+- **HTTP:** `/mobile/v1`, or any path beginning with `/mobile/v1/`. This covers REST and the SSE
+  `GET /mobile/v1/events` stream. The query string is forwarded unchanged.
+- **WebSocket:** exactly `/ws/chat`, with any query string.
+
+Other paths, including `/mobile/v2`, the HQ's unprefixed administrative routes, and `/health`,
+return `404` without contacting the HQ. The relay also rejects a path that is not canonical:
+
+- The target must start with `/` and contain no `#`.
+- URL normalization must leave the path unchanged, so literal or encoded `.` and `..` segments
+  are refused.
+- Repeated percent-decoding must never produce a backslash or a `.`/`..` segment. A path that
+  still changes after five rounds of decoding is also refused.
+
+### Request processing order
+
+Each HTTP request to `/mobile/v1` passes these checks in order. The first failure is returned.
+
+| Step | Check | Failure |
+|------|-------|---------|
+| 1 | Canonical `/mobile/v1` path | `404` `Not Found` |
+| 2 | An HQ is registered for the `Host` label | `502` `No HQ connected` |
+| 3 | Valid pairing credential (skipped for `OPTIONS`) | `401` `Unauthorized` |
+| 4 | Per-HQ rate limit and concurrent-stream cap | `429` `Too Many Requests`, with `Retry-After: 1` |
+| 5 | Forward to the HQ management server | Whatever the HQ returns |
+
+The credential is checked before the rate limit, so unauthenticated callers cannot spend a paired
+device's request budget.
+
+Relay-generated error bodies are `text/plain` constants. Responses produced by the HQ are passed
+through with the HQ's status and headers.
+
+### Pairing credential
+
+Send the credential on every HTTP request and WebSocket upgrade:
+
+```bash
+curl "https://$GATEWAY_ID.$RELAY_ZONE/mobile/v1/identity" \
+  -H "x-dash-relay-credential: $RELAY_CREDENTIAL" \
+  -H "Authorization: Bearer $MOBILE_TOKEN"
+```
+
+A credential is 32 random bytes encoded as base64url. It is valid only for the HQ it was
+provisioned for. The relay passes the header through the tunnel with the other request headers.
+The HQ's relay client removes it before replaying the request on loopback, so it never reaches
+the HQ's HTTP servers.
+
+### WebSocket /ws/chat
+
+Upgrades to `wss://<gatewayId>.<zone>/ws/chat` are bridged to the HQ's chat server. The frames
+inside are the HQ chat protocol. See [HQ Chat WebSocket](/api-hq-chat-websocket).
+
+Native clients send the credential in the `x-dash-relay-credential` header. Browsers can't set
+headers on a WebSocket upgrade, so they offer the credential as a subprotocol instead:
+
+```text
+Sec-WebSocket-Protocol: dash.v1, dash.relay-credential.<credential>
+```
+
+Subprotocol rules:
+
+- The header wins. The subprotocol is read only when `x-dash-relay-credential` is absent or empty.
+- The offer must contain exactly one `dash.relay-credential.<credential>` entry, plus an optional
+  `dash.v1`. An unknown extra entry, a second credential, or an empty credential closes with
+  `4401`.
+- The relay selects only `dash.v1`, and only when the client offered it. The credential never
+  appears in a response header.
+- The relay removes the credential entry before forwarding. If `dash.v1` was also offered, it is
+  forwarded alone. Otherwise the `Sec-WebSocket-Protocol` header is dropped.
+
+Upgrade failures:
+
+| Condition | Result |
+|-----------|--------|
+| Path is not exactly `/ws/chat` | Raw `HTTP/1.1 404 Not Found`, then the socket closes |
+| No HQ registered for the `Host` label | Socket destroyed with no HTTP response |
+| Missing or invalid credential | Upgrade completes, then close `4401` `Unauthorized` |
+| Rate limit or stream cap reached | Upgrade completes, then close `4429` `Too Many Requests` |
+| Credential revoked while connected | Close `4401` `Revoked` |
+| HQ tunnel drops | Close `1000` |
+
+The relay passes the HQ's close code to the device when it is `1000` or in the range `3000`–`4999`,
+for example the HQ's `4001`. Any other code becomes `1000`. Close reasons are truncated to 123
+bytes. Text and binary messages keep their type in both directions.
+
+### CORS
+
+A browser strips custom headers from a CORS preflight, so an `OPTIONS` request to a canonical
+`/mobile/v1` path is forwarded **without** a pairing credential. The HQ answers it from its own
+origin allowlist. The relay never sets CORS policy for data responses. `OPTIONS` on any other path
+returns `404` and is not forwarded.
+
+When the request carries an `Origin` header, the relay adds these headers to its own `401`, `429`,
+and `502` responses on `/mobile/v1`:
+
+```text
+Access-Control-Allow-Origin: <request Origin>
+Vary: Origin
+```
+
+These headers let a browser read the status. For example, a revoked credential then shows as
+`401` instead of a network failure. `Access-Control-Allow-Credentials` is never set. The `404` for
+an unknown path gets no CORS headers, and neither does a `502` caused by the tunnel closing
+mid-request.
+
+### Rate limits
+
+Limits apply per HQ (`gatewayId`). They are fixed defaults and cannot be set from the relay's
+command line or environment.
+
+| Limit | Default | Applies to |
+|-------|---------|------------|
+| Authenticated request rate | 50 per second, burst 100 (token bucket) | `/mobile/v1` HTTP requests and `/ws/chat` upgrades |
+| Preflight rate | 5 per second, burst 10 (separate token bucket) | Credential-less `OPTIONS` on `/mobile/v1` |
+| Concurrent streams | 256 | All open HTTP, SSE, and WebSocket streams for one HQ |
+
+The two buckets are independent, so preflight floods cannot use up the authenticated budget.
+Both buckets reset when the HQ's tunnel closes.
+
+### Error reference
+
+| Status or close code | Body or reason | Meaning |
+|----------------------|----------------|---------|
+| HTTP `404` | `Not Found` | Path is not a canonical `/mobile/v1` target |
+| HTTP `502` | `No HQ connected` | No HQ is registered for the `Host` label |
+| HTTP `401` | `Unauthorized` | Missing, invalid, or revoked pairing credential |
+| HTTP `429` | `Too Many Requests` | Rate limit or stream cap reached; retry after 1 second |
+| HTTP `502` | Upstream reason, or `Upstream closed` | The HQ closed the stream before sending a response |
+| WS `4401` | `Unauthorized` or `Revoked` | Invalid or revoked pairing credential |
+| WS `4429` | `Too Many Requests` | Rate limit or stream cap reached |
+
+If a stream closes after the HQ has already sent a response, the relay ends the response early
+and the client sees a truncated body.
+
+## HQ tunnel
+
+### GET /gw/:gatewayId
+
+The HQ opens a WebSocket to `/gw/<gatewayId>`, with the ID URL-encoded, and keeps it open. The
+query string is ignored. The path must have exactly one segment after `/gw/`. The `Host` header
+isn't used, so the HQ may dial any hostname that reaches the relay.
+
+**Headers**
+
+| Header | Required | Value |
+|--------|----------|-------|
+| `Authorization` | Yes | `Bearer <relay-token>` in development and self-hosted modes, `Bearer <dial-token>` in hosted mode |
+| `X-Gateway-Proof` | Hosted mode | A fresh holder-of-key assertion. Ignored in other modes |
+
+```text
+GET /gw/demo HTTP/1.1
+Host: demo.relay.example.com
+Upgrade: websocket
+Authorization: Bearer <dial-token>
+X-Gateway-Proof: <assertion>
+```
+
+**Lifecycle**
+
+- The relay always completes the upgrade, then checks the credentials. On failure it closes with
+  `4401` `Unauthorized` **before** registering the HQ, so a rejected dial cannot replace a
+  connected HQ with the same ID.
+- Only one tunnel per `gatewayId`. An accepted dial with the same ID replaces the existing tunnel
+  and closes it.
+- When a tunnel closes, every device stream on it ends. Pending HTTP requests get `502` and
+  WebSockets close with `1000`.
+- `POST /admin/gateways/revoke` closes the tunnel with `4401` `Revoked`.
+
+### Dial token
+
+In hosted mode the control plane signs a dial token bound to one HQ. The relay verifies it offline
+with the Ed25519 public key in `RELAY_DIAL_TOKEN_PUBLIC_KEY`. See
+[Relay Control Plane API](/api-relay-control-plane) for how HQs get and refresh tokens.
+
+The token is `base64url(JSON claims).base64url(signature)`: an Ed25519 signature over the first
+segment. It has no `alg` field because the algorithm is fixed.
+
+| Claim | Type | Meaning |
+|-------|------|---------|
+| `tenantId` | `string` | Owning tenant |
+| `gatewayId` | `string` | Must equal the `:gatewayId` in the dial path |
+| `cnf` | `string` | The HQ's raw 32-byte Ed25519 public key, base64url |
+| `exp` | `number` | Expiry, unix seconds. The token is rejected once `exp` is reached |
+
+### Holder-of-key proof
+
+`X-Gateway-Proof` uses the same wire format, signed with the HQ's own private key. The relay
+verifies it against the `cnf` key from the dial token, so a stolen token is useless without the
+private key.
+
+| Claim | Type | Meaning |
+|-------|------|---------|
+| `gatewayId` | `string` | Must equal the dial path's `gatewayId` |
+| `aud` | `string` | Must be `relay-dial` |
+| `iat` | `number` | Issued-at, unix seconds |
+| `exp` | `number` | Expiry, unix seconds. The HQ signs a new proof for every dial with a 60-second lifetime |
+
+```json
+{"gatewayId":"gw-1","aud":"relay-dial","iat":1790000000,"exp":1790000060}
+```
+
+### Keepalive and reconnect
+
+These behaviors belong to the HQ's relay client:
+
+- **Heartbeat.** The HQ sends a WebSocket protocol ping every 20 seconds. If no pong arrives
+  before the next interval, it terminates the socket and reconnects. The relay answers protocol
+  pings automatically.
+- **Backoff.** Reconnects wait 1 second, doubling each attempt up to 30 seconds. The backoff
+  resets only after a connection stays up for 5 seconds, so a relay that accepts and immediately
+  closes with `4401` is not retried in a tight loop.
+- **Token refresh.** In hosted mode a `4401` close triggers a dial-token refresh from the control
+  plane, at most once every 30 seconds, then a redial. The HQ also refreshes one hour before the
+  token expires. A refresh affects only new dials; the open tunnel stays up.
+- On any disconnect the HQ drops all in-flight loopback requests for that tunnel.
+
+## Mux frame format
+
+Every message on the tunnel is one WebSocket text message containing one JSON object. The `t` field
+gives the frame type. The relay and the HQ ignore messages that are not valid JSON or have an
+unknown `t`.
+
+`streamId` is a positive integer assigned by the relay. It starts at `1` for each tunnel connection
+and increases by one for each device request or WebSocket.
+
+| `t` | Direction | Fields | Meaning |
+|-----|-----------|--------|---------|
+| `open` | Relay → HQ | `streamId`, `target`, `kind`, `method?`, `path`, `headers` | Start a stream |
+| `head` | HQ → relay | `streamId`, `status`, `headers` | Response status and headers. `101` for an accepted WebSocket |
+| `data` | Both | `streamId`, `chunk`, `binary?` | Body bytes or one WebSocket message. `chunk` is base64 |
+| `end` | Both | `streamId` | No more body in this direction |
+| `close` | Both | `streamId`, `code?`, `reason?` | Abort or tear down the stream |
+| `credit` | Relay → HQ | `streamId`, `bytes` | Flow-control grant for bytes delivered to the device |
+| `ping` | Both | None | Application-level ping |
+| `pong` | Both | None | Reply to `ping` |
+
+**`open` fields**
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `target` | `mgmt` \| `chat` | `mgmt` for all `/mobile/v1` HTTP, `chat` for `/ws/chat` |
+| `kind` | `http` \| `ws` | Plain HTTP (including SSE) or a WebSocket |
+| `method` | HTTP method | Present for `http` streams |
+| `path` | Request target | The original path and query string, for example `/mobile/v1/agents?cursor=next` |
+| `headers` | `Record<string, string>` | Device headers with lowercase names. `host`, `connection`, and `keep-alive` are removed and repeated headers are joined with `, ` |
+
+The HQ replays `mgmt` streams to its management server and `chat` streams to its chat server on
+`127.0.0.1`. Before replaying, it removes `x-dash-relay-credential`, hop-by-hop headers, and any
+header named in `Connection`. On WebSocket streams it also removes every `sec-websocket-*` header.
+
+### HTTP stream
+
+```json
+{"t":"open","streamId":1,"target":"mgmt","kind":"http","method":"GET","path":"/mobile/v1/agents?cursor=next","headers":{"authorization":"Bearer <mobile-token>","x-dash-relay-credential":"<credential>"}}
+{"t":"end","streamId":1}
+{"t":"head","streamId":1,"status":200,"headers":{"content-type":"application/json"}}
+{"t":"data","streamId":1,"chunk":"eyJvayI6dHJ1ZX0="}
+{"t":"end","streamId":1}
+```
+
+The relay sends request body chunks as `data` frames, then `end`. The HQ answers with one `head`,
+any number of `data` frames, and `end`. If the HQ's loopback request fails, the HQ sends `close`
+with an error `reason`. Before `head`, the device then gets `502`. If the device disconnects, the
+relay sends `close` and the HQ aborts the loopback request.
+
+### WebSocket stream
+
+```json
+{"t":"open","streamId":2,"target":"chat","kind":"ws","path":"/ws/chat","headers":{"authorization":"Bearer <mobile-token>"}}
+{"t":"head","streamId":2,"status":101,"headers":{}}
+{"t":"data","streamId":2,"chunk":"eyJ0eXBlIjoibWVzc2FnZSJ9","binary":false}
+{"t":"close","streamId":2,"code":1000,"reason":""}
+```
+
+The relay upgrades the device before the HQ answers. Device messages that arrive before the
+HQ's loopback socket opens are queued by the HQ and delivered in order. `binary` preserves the
+message type: the HQ chat server accepts only text messages. When the loopback socket closes, the
+HQ sends `close` with its code and reason, and the relay closes the device socket as described in
+[WebSocket /ws/chat](#websocket-ws-chat).
+
+### Flow control
+
+Credit applies to HTTP response bodies, including SSE:
+
+- The HQ counts bytes it has sent on a stream but not yet had credited. At 256 KiB it pauses
+  reading from the loopback response.
+- The relay sends `credit` with the number of bytes written to the device. It sends the credit
+  immediately if the write was flushed, otherwise after the device socket drains.
+- The HQ resumes reading once the uncredited count drops below 256 KiB.
+
+A slow device therefore slows down the HQ, and the relay does not buffer without limit. WebSocket
+streams and request bodies have no credit flow control.
+
+### Heartbeat frames
+
+Both ends reply to a `{"t":"ping"}` frame with `{"t":"pong"}`. Neither the relay nor the HQ sends
+application-level pings on its own. Liveness uses WebSocket protocol pings, described in
+[Keepalive and reconnect](#keepalive-and-reconnect).
+
+### Fault isolation
+
+The relay ignores frames for unknown stream IDs and `open` or `credit` frames sent by the HQ. If a
+frame from the HQ can't be applied, for example a second `head` on a stream, the relay closes only
+that stream. Other streams and the tunnel stay up.
+
+## Admin API
+
+The admin API manages pairing credentials. The control plane is its caller in hosted
+deployments. On a self-hosted relay you call it yourself. It runs on the relay's listener
+under `/admin/` and works on any hostname.
+
+### Common behavior
+
+- Every route is `POST` with a JSON body. Responses are `application/json`.
+- Authenticate with `Authorization: Bearer <admin-secret>`.
+- The body is limited to 64 KiB. An empty body is treated as `{}`.
+- `tenantId` and `gatewayId` are required non-empty strings on every route.
+- Both revoke routes return `200` even when nothing matched, so retries are safe.
+
+Checks run in this order:
+
+| Status | Body | Cause |
+|--------|------|-------|
+| `404` | `{"error":"Admin API not enabled"}` | The relay has no admin secret configured. Returned before authentication |
+| `401` | `{"error":"Unauthorized"}` | Missing or wrong admin secret |
+| `405` | `{"error":"Method Not Allowed"}` | Method is not `POST` |
+| `400` | `{"error":"Invalid JSON body"}` | Body is not valid JSON, or exceeds 64 KiB |
+| `400` | `{"error":"tenantId and gatewayId required"}` | A required field is missing or empty |
+| `404` | `{"error":"Unknown admin route"}` | Unrecognized path under `/admin/` |
+
+### POST /admin/pairings
+
+Provisions a new pairing credential for an HQ. Each paired device gets its own credential. The
+raw value is returned only in this response.
+
+**Body**
+
+| Field | Type | Required |
+|-------|------|----------|
+| `tenantId` | `string` | Yes |
+| `gatewayId` | `string` | Yes |
+
+```bash
+curl -X POST "https://relay.example.com/admin/pairings" \
+  -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"tenantId":"self-hosted","gatewayId":"demo"}'
+```
+
+**Response** `200`
+
+```json
+{ "gatewayId": "demo", "credential": "<43-character base64url credential>" }
+```
+
+The relay keeps at most 16 credentials per HQ. Provisioning a 17th evicts one. The in-memory store
+evicts the credential that has gone longest without being used. The durable store evicts the
+oldest by creation time.
+
+### POST /admin/pairings/revoke
+
+Revokes one device, or every device, for an HQ. Revocation is immediate. The relay also closes that
+device's open connections:
+
+- WebSockets close with `4401` `Revoked`.
+- An HTTP request that has not responded yet gets `401`.
+- A stream that has already sent headers, such as SSE, is ended.
+
+**Body**
+
+| Field | Type | Required | Meaning |
+|-------|------|----------|---------|
+| `tenantId` | `string` | Yes | Owning tenant |
+| `gatewayId` | `string` | Yes | The HQ |
+| `credentialHash` | `string` | No | SHA-256 of the credential, base64url. Revokes exactly that device |
+| `credential` | `string` | No | The raw credential. Revokes exactly that device |
+
+If `credentialHash` is present it is used. Otherwise `credential` is used. With neither, **every**
+credential for the HQ is revoked and every credentialed connection to it is closed. The control
+plane revokes by `credentialHash` because it stores only hashes.
+
+```bash
+curl -X POST "https://relay.example.com/admin/pairings/revoke" \
+  -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"tenantId":"self-hosted","gatewayId":"demo","credential":"<credential>"}'
+```
+
+**Response** `200`
+
+```json
+{ "ok": true }
+```
+
+### POST /admin/gateways/revoke
+
+Closes the HQ's live tunnel immediately with `4401` `Revoked`, ending every device stream on it.
+Pairing credentials are not changed. Whether the HQ can dial back in depends on its dial-in
+credential. In hosted mode that is the dial token from the control plane.
+
+**Body**
+
+| Field | Type | Required |
+|-------|------|----------|
+| `tenantId` | `string` | Yes |
+| `gatewayId` | `string` | Yes |
+
+```bash
+curl -X POST "https://relay.example.com/admin/gateways/revoke" \
+  -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"tenantId":"t1","gatewayId":"demo"}'
+```
+
+**Response** `200`
+
+```json
+{ "ok": true }
+```
+
+## Liveness
+
+The relay has no health route. Use one of these probes:
+
+| Probe | Result | What it shows |
+|-------|--------|---------------|
+| Any HTTP request to the listener, for example `GET /` | `404` | The relay process is up |
+| `GET https://<gatewayId>.<zone>/mobile/v1/health` without a credential | `502` or `401` | TLS and wildcard routing work. `502` means no HQ is connected, `401` means one is |
+| The same request with a valid `x-dash-relay-credential` | The HQ's health response | The full device-to-HQ path works |
+
+In development mode, which has no admin secret, the second probe returns the HQ's health response
+instead of `401`.
+
+## Configuration
+
+Each setting can be passed as a command-line flag or an environment variable. A flag overrides the
+environment variable, which overrides the default.
+
+| Flag | Environment variable | Default | Meaning |
+|------|----------------------|---------|---------|
+| `--port` | `RELAY_PORT` | `8443` | TCP port for the single listener that serves devices, HQs, and `/admin/*` |
+| `--host` | `RELAY_HOST` | `127.0.0.1` | Bind address. Loopback by default because a TLS terminator sits in front |
+| `--relay-token` | `RELAY_TOKEN` | None | Shared secret HQs present on dial-in. Required unless a dial-token public key is set |
+| `--admin-secret` | `RELAY_ADMIN_SECRET` | None | Enables `/admin/*` and pairing-credential enforcement |
+| `--dial-token-public-key` | `RELAY_DIAL_TOKEN_PUBLIC_KEY` | None | Path to a PEM Ed25519 public key. Setting it selects hosted mode |
+| `--store-path` | `RELAY_STORE_PATH` | `relay-creds.db` | Hosted mode only. Path to the SQLite pairing store |
+
+The relay exits at startup if neither a relay token nor a dial-token public key is configured.
+
+The relay serves plain HTTP and WebSocket. Put a TLS terminator in front of it, such as Caddy or
+Traefik, with a wildcard certificate for the HQ subdomains. Devices and HQs then connect on port
+`443`. The terminator must keep the original `Host` header and pass WebSocket upgrades through.
+Settings such as the DNS zone and the DNS provider token are read by the terminator, not by the
+relay.
+
+Rate limits and the stream cap use the defaults in [Rate limits](#rate-limits) and are not
+configurable from the command line or environment.
