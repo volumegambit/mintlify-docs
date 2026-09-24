@@ -31,7 +31,9 @@ The empty chat panel shows your recent conversations and deployed agents for qui
 ## Guide a response or queue a follow up
 
 On a current HQ, the message box stays editable while your agent works. Type your message and press
-**Send**. DashSquad decides how to deliver it:
+**Send**.
+
+On Desktop and the web client, DashSquad decides how to deliver it:
 
 - If your message changes or narrows the work in progress, it becomes a **Steer**: the agent picks it
   up at its next safe boundary. It is labeled **Auto-steered**.
@@ -39,16 +41,20 @@ On a current HQ, the message box stays editable while your agent works. Type you
 - If DashSquad is not sure, it asks. The choice opens with its best guess marked **Suggested**, and your
   message stays in the box until you pick one.
 
-To choose yourself, press **Cmd+Return** (Ctrl+Enter on Windows and in the web client) instead of
-**Send**. On iPhone, iPad and Android, touch and hold **Send** to choose yourself. The choice offers:
+To choose yourself instead, press **Cmd+Return** (Ctrl+Enter on Windows and in the web client)
+instead of **Send**. On iPhone, iPad, and Android, **Send** always opens the choice today —
+automatic routing is coming to those apps in a later release. The choice offers:
 
 - **Steer — Guide the response in progress.** The agent receives your guidance at its next safe
   boundary. It appears in the conversation with a delivery status, becoming **Steered** when delivered.
 - **Follow Up — Send after this response finishes.** Save the next request in the shared queue.
   You can queue several requests and edit or remove one before it starts.
 
-Automatic routing needs an OpenRouter key on your HQ. Without one, or with **Settings → Chat →
-While a response is running → Always ask** in Desktop, every message asks.
+To make the call, the HQ sends your new message's text — along with a short excerpt of the current
+task and the reply in progress — to a decision model (TypeSafe's Jev, reached through OpenRouter
+using your OpenRouter key). Images are never sent. Automatic routing needs that OpenRouter key on
+your HQ; without one, or with **Settings → Chat → While a response is running → Always ask** in
+Desktop, every message asks instead — switch to **Always ask** any time you'd rather turn this off.
 
 Closing the chooser keeps your draft and attachments. Sending clears only the draft the HQ has
 acknowledged; text you type afterward stays in the message box.

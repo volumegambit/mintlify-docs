@@ -254,7 +254,13 @@ Steer or a Follow Up instead of always asking. That configuration is persisted a
 | `timeoutMs` | `1500` | How long the HQ waits for a decision before falling back to asking, an integer from 100 to 10000 |
 | `baseUrl` | OpenRouter's API | Optional override, for a compatible decision-model endpoint |
 
-Without an OpenRouter key configured, the HQ always asks, regardless of `mode`.
+To decide, the HQ sends the new message's text, a short excerpt of the current task, and the reply
+in progress to the decision model (`model`, by default TypeSafe's Jev, called through OpenRouter
+using your OpenRouter key). Images are never sent. Set `mode` to `ask` to turn this off.
+
+With the default OpenRouter endpoint, no configured OpenRouter key means the HQ always asks,
+regardless of `mode`. A custom `baseUrl` (for example a local decision-model server) needs no
+OpenRouter key at all, and the key is never sent to it.
 
 Change `mode` from Desktop's **Settings → Chat**. Edit the other keys directly in
 `message-routing.json`; the HQ reads this file for every routing decision, so a change takes effect
