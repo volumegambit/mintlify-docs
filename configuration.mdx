@@ -239,6 +239,27 @@ per sentence.
   together. An older HQ rejects a client's request to set dictation language to "Auto".
 </Note>
 
+## Message routing
+
+When a message arrives while your agent is working, the HQ can decide on its own whether it's a
+Steer or a Follow Up instead of always asking. That configuration is persisted at
+`<dataDir>/message-routing.json`.
+
+| Key | Default | Description |
+|-----|---------|--------------|
+| `mode` | `auto` | `auto` lets the HQ route automatically; `ask` always opens the Steer/Follow Up choice |
+| `model` | `typesafe/jev-1.13` | The decision model, called through OpenRouter |
+| `steerMinConfidence` | `0.8` | Minimum confidence (0–1) to auto-route as a Steer |
+| `followUpMinConfidence` | `0.5` | Minimum confidence (0–1) to auto-route as a Follow Up |
+| `timeoutMs` | `1500` | How long the HQ waits for a decision before falling back to asking, an integer from 100 to 10000 |
+| `baseUrl` | OpenRouter's API | Optional override, for a compatible decision-model endpoint |
+
+Without an OpenRouter key configured, the HQ always asks, regardless of `mode`.
+
+Change `mode` from Desktop's **Settings → Chat**. Edit the other keys directly in
+`message-routing.json`; the HQ reads this file for every routing decision, so a change takes effect
+immediately without a restart.
+
 ## Plugins
 
 Plugins let you drop extra skills into any DashSquad agent without touching the config file. The HQ discovers plugins from the `plugins/` directory inside the **HQ's data directory** — that is, `~/.dash/gateway/plugins/`. Throughout this section, `<dataDir>` is shorthand for that HQ data directory (`~/.dash/gateway`), not Desktop's `~/.dash/desktop`.
