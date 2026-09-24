@@ -25,6 +25,16 @@ OpenRouter models keep the upstream vendor in the name, so they carry a second p
 
 Each provider needs an API key. The recommended approach is through **Desktop**, which stores keys in an AES-256-GCM encrypted credential store. Open **Settings → AI Providers**, select your provider, and paste your key.
 
+You can also add, replace, or remove keys away from your desk:
+
+- **Web app** — open the **AI Providers** tab.
+- **iPhone and iPad** — open **Settings → AI Providers**.
+- **Android** — open **Settings → AI Providers**.
+
+Keys you add there go into the same encrypted store on your HQ, so they show up in Desktop too, and the other way round. Once saved, a key is never shown again anywhere: the apps list only each key's name. Signing in with a Claude or Codex login still happens in Desktop, because it opens a browser on the HQ's computer. Those keys appear in the apps marked **Signed in on Desktop**, and you can remove or replace them there.
+
+If you don't see **AI Providers** in an app, update your HQ.
+
 For standalone HQ usage (no Desktop), set credentials via environment variables instead — for example in an `.env` file or your Docker environment.
 
 A trusted [plugin](/plugins#provider-credentials) can also contribute additional providers here, which you connect the same way as the built-in ones.

@@ -509,6 +509,32 @@ Store provider API keys and messaging tokens in the HQ's encrypted store
 | `POST` | `/credentials` | Set one or more credentials |
 | `DELETE` | `/credentials/:key` | Remove a credential |
 
+## AI providers
+
+Mounted on `/mobile/v1` and `/mobile/v2` only, and gated on the `providers-v1` capability in
+`GET /health`. It is the relay-reachable twin of the Desktop-only `/credentials` routes above,
+narrowed to provider API keys. Keys use the same credential slots, so a key written here is the
+one Desktop shows.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/providers` | Every provider the HQ has a catalog for, with each key's name and kind (`api_key` or `oauth`). Never a key value |
+| `PUT` | `/providers/:id/keys/:name` | Add or replace one key. Body: `{ "value": "<api key>" }`. Answers `{ "ok": true }` |
+| `DELETE` | `/providers/:id/keys/:name` | Remove one key, plus any OAuth sign-in data stored with it |
+
+```bash
+curl -i -X PUT "$MOBILE_URL/mobile/v1/providers/anthropic/keys/default" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"value":"sk-ant-..."}'
+```
+
+A key name is 1–64 letters, numbers, or hyphens. A value that is blank, longer than 8192
+characters, or contains whitespace answers `400 validation_failed`. An unknown provider, or a
+`DELETE` of a key that doesn't exist, answers `404 not_found`. Replacing an OAuth sign-in with a
+pasted key turns it into a plain API key. Any write refreshes the model list and speech
+availability on the next request.
+
 ## Models
 
 | Method | Path | Purpose |
