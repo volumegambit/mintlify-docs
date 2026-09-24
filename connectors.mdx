@@ -1,0 +1,39 @@
+---
+title: Connectors
+description: Give your agents tools from other services with MCP servers, from Desktop or your phone.
+---
+
+A connector is a Model Context Protocol (MCP) server your HQ runs for your agents. Linear, GitHub, Notion, a local filesystem: once connected, its tools are available to the agents you choose.
+
+## Add a connector
+
+You can add connectors from Desktop (**Settings → Connectors (MCP)**) or from the DashSquad app on iPhone, iPad, or Android (**Settings → Connectors**).
+
+1. Pick a name, such as `linear`.
+2. Choose how to reach it:
+   - **Standard (HTTP)** or **SSE** for a hosted server. Paste its URL.
+   - **Command** for a server your HQ runs locally, such as `npx -y @modelcontextprotocol/server-github`.
+3. Add environment variables or headers the server needs. Put API keys in environment variables, not in the command's arguments: your phone shows the arguments but never shows variable values.
+
+## Sign in
+
+Many hosted servers ask you to sign in. The connector then shows **Needs authorization** and a sign-in page opens:
+
+- On Desktop it opens in your browser. When you finish, your browser hands you back to DashSquad.
+- On iPhone, iPad, and Android it opens inside the app.
+
+Your HQ keeps the sign-in. Your devices never see the token. If a sign-in page sits open too long you'll see "This sign-in expired. Try again." Tap **Authorize** to start a fresh one.
+
+If a service later signs you out, the connector shows **Needs authorization** again. Tap **Authorize** from any device.
+
+## Choose which agents use a connector
+
+Open an agent, then **Connectors**. With **All connectors** on, the agent can use every connector. Turn it off to pick specific ones. Turning off every connector means the agent uses none.
+
+## Limit which URLs connectors may use
+
+The URL allowlist restricts where hosted connectors can point. Use `*` as a wildcard, for example `https://*.linear.app/*`. When the list is empty, all URLs are allowed.
+
+## Agents can add connectors too
+
+An agent with the connector-management tools can add a connector itself. If that connector needs a sign-in, the agent asks you to tap **Authorize** under Connectors.

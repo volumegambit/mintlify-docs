@@ -149,6 +149,7 @@ DashSquad needs no environment variables for normal Desktop use. These are avail
 | `SUBAGENTS_*`, `SWARM_DEFAULT_*` | Per-agent sub-agent cap defaults — see [HQ defaults](#hq-defaults) for the full list. |
 | `BROWSER_MAX_SESSIONS` | How many [browsers](/browser) the HQ runs at once, across all agents — a whole number from `1` to `10` (default: `3`). Any other value is ignored with a warning in the HQ log, and the default is used. |
 | `BROWSER_EXECUTABLE_PATH` | Full path to the browser the [browser tool](/browser) should use. It's the first place the HQ looks; if nothing is there, or it doesn't start, the HQ falls back to finding Chrome or Edge as usual. |
+| `MCP_OAUTH_REDIRECT_URI` | Where connector sign-in pages send you back. Defaults to `dash://mcp-oauth`, which Desktop and the mobile apps catch. Change it only if a service refuses app redirects and you host a page that forwards to `dash://mcp-oauth` with the query unchanged. |
 | `NODE_ENV` | Set to `production` to quiet the HQ's verbose request logging. |
 
 Provider API keys are **not** read from environment variables when you use Desktop — they live in the encrypted credential store (see [Secrets](/secrets)). When running the HQ standalone, you can supply them as environment variables (e.g. `ANTHROPIC_API_KEY`); see [AI Providers](/ai-providers#configuring-credentials).
