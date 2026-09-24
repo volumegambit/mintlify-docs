@@ -1243,7 +1243,7 @@ and `retryable: false`. Bodies accept only the fields listed for each frame.
 
 Field rules shared by the commands:
 
-- `conversationId` must be a UUID. The HQ does not accept a sub-agent's `sub_` ID on a v2 command.
+- `conversationId` is a UUID, or `sub_` followed by a 26-character ULID for a sub-agent conversation.
 - `images` holds at most four `{ "mediaType", "data" }` objects. `mediaType` is `image/jpeg`,
   `image/png`, `image/gif`, or `image/webp`. `data` is canonical padded base64. Each image is at
   most 5 MiB decoded, and all images in the frame at most 12 MiB.

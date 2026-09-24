@@ -186,12 +186,9 @@ Errors use one JSON envelope, `MobileApiError`:
 | `delivery_choice_required` | | Not returned over HTTP. The v2 chat socket uses it to reject an `auto` input the HQ could not route. See [Steer and Follow Up](#how-the-queue-works). |
 | `too_large`, `too_long`, `invalid`, `provider`, `network`, `unavailable` | `413`, `400`, `502`, `503` | Speech errors, passed through from the speech provider. See [Speech](#speech). |
 
-Two families of routes return a bare `{ "error": "<message>" }` body instead of the envelope. The
-body has no `code` or `retryable`, so map these by HTTP status:
-
-- The memory routes: `GET /agents/:id/memory`, `GET /agents/:id/memory/:name`, and
-  `DELETE /agents/:id/memory/:name`.
-- The `404` from `GET /agents/:id/skills`.
+The memory routes return a bare `{ "error": "<message>" }` body instead of the envelope. The
+body has no `code` or `retryable`, so map these by HTTP status: `GET /agents/:id/memory`,
+`GET /agents/:id/memory/:name`, and `DELETE /agents/:id/memory/:name`.
 
 ### Compatibility rules
 
@@ -473,8 +470,7 @@ clients can't create, install, edit, or remove skills.
 | `source` | `string` | `managed`, `agent`, `remote`, or `plugin` |
 | `content` | `string` | Optional. The skill's full text. |
 
-**Errors:** `401`. `404` when the agent does not exist, with the bare body
-`{ "error": "not found" }`.
+**Errors:** `401`. `404` `not_found` when the agent does not exist.
 
 ## Memory
 
