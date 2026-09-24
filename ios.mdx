@@ -102,14 +102,20 @@ updates arrived and returns to the live response. If you send while reading earl
 briefly reveals your new message and offers **Back to reading** so you can return to the same place.
 
 With a hardware keyboard, **Return** inserts a line break and **Cmd+Return** sends — matching the
-Send button. This differs from Desktop and the web client, where Return sends; see
+Send button. You can change the Return-key behavior in Settings; see
 [Composer keys](/chat-with-your-agent#composer-keys).
 
-While an agent is working, the send button becomes **Follow Up**. It adds your message to a shared
-queue and runs it after the current response. Use the adjacent menu for **Interrupt & send** when the
-new message should take priority. The work strip shows the active response and pending count. Tap
-**View** to review, edit, or remove pending Follow Ups. **Stop** ends the exact active response and
-pauses pending work; **Resume** continues it when you are ready.
+While an agent is working, keep typing and tap **Send**. Choose **Steer** to guide the response in
+progress, or **Follow Up** to queue a request for afterward. Closing the chooser preserves your text
+and images. The message box clears only after the HQ acknowledges your submission.
+
+The shared queue shows pending Follow Ups. Edit or remove one before it starts. **Stop** ends the
+current response and advances to the next item. If a response fails, the queue shows **Follow Ups
+paused**. Choose **Resume Follow Ups** when you are ready to continue. A Steer that reaches the HQ
+too late is marked **not delivered** and stays in the conversation for you to review.
+
+These controls require a current HQ with Mobile API v2. Older HQs retain the previous single-turn
+composer.
 
 Every paired client sees the same admitted turns, activity, command outcomes, and Follow Up order.
 Each window keeps its own text draft and reading position. If the connection drops, DashSquad keeps the

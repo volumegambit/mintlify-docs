@@ -64,11 +64,11 @@ DashSquad is flexible about where each piece runs.
 
 ## Conversation history across devices
 
-DashSquad for iOS and capability-aware Desktop share one view. They render the same
-HQ-authoritative conversation history. Android remains a legacy, non-resumable client in
-this release, so its private chat sessions are not part of that shared history, and the
-[sub-agent](#sub-agents) interface — rows, transcripts, and the tasks list — is on iOS, the web
-client, and Desktop only.
+DashSquad for iOS, capability-aware Desktop, and the web client share the
+HQ-authoritative conversation history. Android shares canonical conversations with Mobile API v2,
+including the active response, replay, and the accepted input queue; on older HQs it keeps its
+legacy private chat sessions. The [sub-agent](#sub-agents) interface — rows, transcripts, and the tasks list — is
+on iOS, the web client, and Desktop only.
 
 For HQs that advertise `conversation-sync-v1`, the HQ owns conversation metadata,
 messages, revisions, active turns, and replay sequences. Desktop keeps a
@@ -80,6 +80,21 @@ Desktop preserves its older local JSON/JSONL conversations separately. With a ca
 HQ they appear as read-only **On this Mac** history. With an HQ that explicitly lacks
 the capability, Desktop keeps the original local-authoritative chat behavior.
 
+### Steer and Follow Up
+
+Mobile API v2 keeps one active run per conversation and a durable input queue at the HQ. A **Steer**
+is delivered at a safe boundary inside that run and starts a new transcript segment. A **Follow Up**
+waits for a later run. Clients display committed state; they do not advance the queue themselves.
+Accepted inputs and their message identities survive reconnection and process restart.
+
+Stopping the active v2 run advances the queue. Failure pauses remaining Follow Ups until an explicit
+**Resume Follow Ups**. The older v1 pending-work API remains compatible, including its distinct
+Stop-pauses and priority-interruption behavior. Both APIs use the same queue and execution owner.
+
+V2 subscriptions replay a conversation-wide `v2Seq`. V1 retains its own `seq`; the two cursors are
+independent. A snapshot includes a replay watermark so a client can combine saved messages and new
+events without duplicating text. See [the v2 API](/api-reference#steer-and-follow-up-mobile-api-v2).
+
 ## HQ APIs
 
 The HQ runs two loopback servers for host administration and a separate pinned-TLS listener
@@ -89,16 +104,17 @@ for native devices:
 |--------|----------|-------------|------|---------|
 | Management API | HTTP | 9300 | Bearer token | Health, identity, agents, conversation sync, credentials, and models |
 | Channel server | WebSocket | 9200 | Query param (`?token=`) | Real-time agent chat and turn resume |
-| Mobile LAN server | HTTPS / WSS | 9400 | Phone-scoped bearer | `/mobile/v1` and `/ws/chat` only |
+| Mobile LAN server | HTTPS / WSS | 9400 | Phone-scoped bearer | `/mobile/v1`, `/mobile/v2`, and `/ws/chat` only |
 
 The management and channel servers bind to `127.0.0.1`. The LAN listener binds separately and
 exposes only the native-client routes; administrative paths such as credentials, plugins, and
 shutdown are not mounted there. Its configured port defaults to `9400`. A pairing QR carries that
 exact port, the LAN listener's exact certificate fingerprint, and one phone-scoped capability,
 never the administrative bearer. Native clients pin that certificate and send the capability in
-the encrypted `Authorization` header for both `/mobile/v1` HTTP/SSE requests and `/ws/chat`
-streaming. Clients check `GET /mobile/v1/health` before enabling conversation sync or resumable
-chat.
+the encrypted `Authorization` header for both `/mobile/v1` and `/mobile/v2` HTTP/SSE requests and `/ws/chat`
+streaming. Current clients probe `GET /mobile/v2/health` for `chat-input-queue-v1` and verify the
+HQ identity. They use v1 only when v2 is explicitly unavailable, not after authentication or TLS
+failures.
 
 ## Remote access identity
 
