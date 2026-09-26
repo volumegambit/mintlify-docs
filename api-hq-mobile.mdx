@@ -238,6 +238,13 @@ Paths in this table and in the sections below are relative to `/mobile/v1`. For 
 | `GET` | `/speech/models` | Bearer | List speech models |
 | `POST` | `/speech/transcriptions` | Bearer | Transcribe a clip |
 | `POST` | `/speech/speech` | Bearer | Synthesize speech |
+| `GET` | `/providers` | Bearer | List AI providers and their key names |
+| `PUT` | `/providers/:id/keys/:name` | Bearer | Add or replace a provider key |
+| `DELETE` | `/providers/:id/keys/:name` | Bearer | Remove a provider key |
+| `POST` | `/providers/:id/sign-in` | Bearer | Start a Claude or ChatGPT sign-in |
+| `GET` | `/providers/:id/sign-in/:attemptId` | Bearer | Poll a sign-in attempt |
+| `POST` | `/providers/:id/sign-in/:attemptId/code` | Bearer | Finish a Claude sign-in with its code |
+| `DELETE` | `/providers/:id/sign-in/:attemptId` | Bearer | Cancel a sign-in attempt |
 | `POST` | `/ws-ticket` | Bearer | Mint a single-use WebSocket ticket |
 
 ## Gateway
@@ -1304,6 +1311,51 @@ Through the relay, an open stream counts against the HQ's concurrent-stream cap.
 [Relay API](/api-relay#rate-limits).
 
 **Errors:** `401`.
+
+## AI providers
+
+Mounted on `/mobile/v1` and `/mobile/v2` only. Check for the `providers-v1` capability in
+[`GET /health`](#get-%2Fhealth) before calling these routes. They are the relay-reachable twin of
+the Desktop-only [`/credentials` routes](/api-reference#credentials), narrowed to provider API keys. Keys use the same credential slots, so a key written here is the
+one Desktop shows.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/providers` | Every provider the HQ has a catalog for, with each key's name and kind (`api_key` or `oauth`). Never a key value |
+| `PUT` | `/providers/:id/keys/:name` | Add or replace one key. Body: `{ "value": "<api key>" }`. Answers `{ "ok": true }` |
+| `DELETE` | `/providers/:id/keys/:name` | Remove one key, plus any OAuth sign-in data stored with it |
+| `POST` | `/providers/:id/sign-in` | Start a subscription sign-in. Body: `{ "keyName": "<name>" }` |
+| `GET` | `/providers/:id/sign-in/:attemptId` | Poll an attempt: `pending`, `complete`, `failed`, `cancelled`, or `expired` |
+| `POST` | `/providers/:id/sign-in/:attemptId/code` | Finish a `code` attempt. Body: `{ "code": "<code shown by the provider>" }` |
+| `DELETE` | `/providers/:id/sign-in/:attemptId` | Cancel a pending attempt |
+
+```bash
+curl -i -X PUT "$MOBILE_URL/mobile/v1/providers/anthropic/keys/default" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"value":"sk-ant-..."}'
+```
+
+A key name is 1–64 letters, numbers, or hyphens. A value that is blank, longer than 8192
+characters, or contains whitespace answers `400 validation_failed`. An unknown provider, or a
+`DELETE` of a key that doesn't exist, answers `404 not_found`. Replacing an OAuth sign-in with a
+pasted key turns it into a plain API key. Any write refreshes the model list and speech
+availability on the next request.
+
+A provider whose list entry has a non-null `signIn` also supports subscription sign-in, which the
+HQ runs end to end — it keeps the PKCE verifier, the state, and the tokens, and an attempt never
+carries a token:
+
+- `kind: "code"` (Claude Pro/Max): open the attempt's `authorizeUrl`, sign in, and post the code
+  the provider then shows (`code#state`, a redirect URL, or the bare code) to `.../code`. A code
+  from another attempt, or one the provider rejects, answers `400 validation_failed`; a rejected
+  code also fails the attempt, since codes are single-use.
+- `kind: "device_code"` (ChatGPT): show `userCode` and `verificationUrl`; the user enters the code
+  there on any device while you poll `GET` until the status leaves `pending`.
+
+Attempts live in the HQ's memory for up to 15 minutes. Starting a new sign-in for the same key
+cancels an earlier pending one. On success the key is stored with `kind: "oauth"` and refreshed by
+the HQ.
 
 ## Speech
 
