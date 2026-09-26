@@ -224,7 +224,7 @@ Paths in this table and in the sections below are relative to `/mobile/v1`. For 
 | `GET` | `/conversations` | Bearer | List conversations, newest first |
 | `POST` | `/conversations` | Bearer | Create a conversation (idempotent) |
 | `GET` | `/conversations/:id` | Bearer | Read a conversation, including tombstones |
-| `PATCH` | `/conversations/:id` | Bearer + `If-Match` | Update title or links |
+| `PATCH` | `/conversations/:id` | Bearer + `If-Match` | Update the title |
 | `DELETE` | `/conversations/:id` | Bearer + `If-Match` | Delete a conversation's content |
 | `GET` | `/conversations/:id/messages` | Bearer | Page through persisted messages |
 | `GET` | `/conversations/:id/pending` | Bearer | Page through queued inputs |
@@ -688,8 +688,6 @@ event log, and every paired client sees the same state. Live turns stream over
   "revision": 2,
   "status": "idle",
   "activeTurnId": null,
-  "owningIssueId": "issue-01",
-  "projectId": "project-01",
   "lastSeq": 5,
   "lastMessagePreview": "Ready from the gateway.",
   "createdAt": "2026-07-12T00:00:00.000Z",
@@ -710,8 +708,6 @@ event log, and every paired client sees the same state. Live turns stream over
 | `revision` | `integer` | Starts at `1` and increases on every change. Used for `ETag` and `If-Match`. |
 | `status` | `string` | `idle`, `running`, `interrupted`, `archived`, or `deleted` |
 | `activeTurnId` | `string` or `null` | The running turn, if any |
-| `owningIssueId` | `string` or `null` | Linked issue |
-| `projectId` | `string` or `null` | Linked project |
 | `lastSeq` | `integer` | Sequence number of the latest event-log entry |
 | `lastMessagePreview` | `string` or `null` | Short preview of the latest message |
 | `createdAt`, `updatedAt` | `string` | ISO 8601 times |
@@ -753,8 +749,6 @@ current conversation in `details.current`, so you can merge and retry without an
       "revision": 2,
       "status": "idle",
       "activeTurnId": null,
-      "owningIssueId": "issue-01",
-      "projectId": "project-01",
       "lastSeq": 5,
       "lastMessagePreview": "Ready from the gateway.",
       "createdAt": "2026-07-12T00:00:00.000Z",
@@ -811,8 +805,6 @@ conversations are left out. Archived conversations are included.
       "revision": 2,
       "status": "idle",
       "activeTurnId": null,
-      "owningIssueId": "issue-01",
-      "projectId": "project-01",
       "lastSeq": 5,
       "lastMessagePreview": "Ready from the gateway.",
       "createdAt": "2026-07-12T00:00:00.000Z",
@@ -840,9 +832,7 @@ Creates a conversation. `requestId` makes the call idempotent: repeating a reque
 {
   "agentId": "agent-01",
   "requestId": "request-01",
-  "title": "Mobile launch check",
-  "owningIssueId": "issue-01",
-  "projectId": "project-01"
+  "title": "Mobile launch check"
 }
 ```
 
@@ -851,8 +841,6 @@ Creates a conversation. `requestId` makes the call idempotent: repeating a reque
 | `agentId` | `string` | Required. The owning agent. |
 | `requestId` | `string` | Required. A client-generated key, unique per intended conversation. |
 | `title` | `string` | Optional. Defaults to `New Conversation`. |
-| `owningIssueId` | `string` | Optional |
-| `projectId` | `string` | Optional |
 
 Every string must be non-blank and is trimmed. Returns `201` with the conversation object and its
 `ETag`, including when an earlier request with the same `requestId` already created it. A
@@ -873,21 +861,17 @@ Sub-agent conversations can be read here by their `sub_` ID.
 
 ### PATCH /conversations/:id
 
-Updates the title or links. Requires `If-Match`. Send at least one field.
+Updates the title. Requires `If-Match`.
 
 ```json
 {
-  "title": "Mobile launch verified",
-  "owningIssueId": null,
-  "projectId": "project-01"
+  "title": "Mobile launch verified"
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `title` | `string` | Optional. Non-blank, trimmed. |
-| `owningIssueId` | `string` or `null` | Optional. `null` clears the link. |
-| `projectId` | `string` or `null` | Optional. `null` clears the link. |
+| `title` | `string` | Required. Non-blank, trimmed. |
 
 Returns the updated conversation and its new `ETag`, and sends `conversation:changed`.
 
