@@ -30,13 +30,31 @@ The empty chat panel shows your recent conversations and deployed agents for qui
 
 ## Guide a response or queue a follow up
 
-On a current HQ, the message box stays editable while your agent works. Enter text, attach images
-if needed, and press **Send**. Choose how to deliver the message:
+On a current HQ, the message box stays editable while your agent works. Type your message and press
+**Send**.
+
+DashSquad decides how to deliver it:
+
+- If your message changes or narrows the work in progress, it becomes a **Steer**: the agent picks it
+  up at its next safe boundary. It is labeled **Auto-steered**.
+- If it asks for separate work, it becomes a **Follow Up** in the shared queue, labeled **Auto-queued**.
+- If DashSquad is not sure, it asks. The choice opens with its best guess marked **Suggested**, and your
+  message stays in the box until you pick one.
+
+To choose yourself, press **Cmd+Return** (Ctrl+Enter on Windows and in the web client) instead of
+**Send**. On iPhone, iPad, and Android, touch and hold **Send** to choose Steer or Follow Up
+yourself. The choice offers:
 
 - **Steer — Guide the response in progress.** The agent receives your guidance at its next safe
   boundary. It appears in the conversation with a delivery status, becoming **Steered** when delivered.
 - **Follow Up — Send after this response finishes.** Save the next request in the shared queue.
   You can queue several requests and edit or remove one before it starts.
+
+To make the call, the HQ sends your new message's text — along with a short excerpt of the current
+task and the reply in progress — to a decision model (TypeSafe's Jev, reached through OpenRouter
+using your OpenRouter key). Images are never sent. Automatic routing needs that OpenRouter key on
+your HQ; without one, or with **Settings → Chat → While a response is running → Always ask** in
+Desktop, every message asks instead — switch to **Always ask** any time you'd rather turn this off.
 
 Closing the chooser keeps your draft and attachments. Sending clears only the draft the HQ has
 acknowledged; text you type afterward stays in the message box.
@@ -51,6 +69,7 @@ response is marked **not delivered**; it never becomes an unrelated later reques
 
 These controls require Mobile API v2. Older HQs and Desktop's local chat keep their existing
 single-response composer. Authentication or connection errors do not enable a legacy fallback.
+Older HQs always ask.
 
 ## Reading tool activity
 

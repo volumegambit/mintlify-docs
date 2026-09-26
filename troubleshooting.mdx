@@ -196,9 +196,31 @@ Something not working? Here are the most common issues and how to fix them.
     current state. Avoid repeatedly sending a replacement while a command is still pending.
   </Accordion>
   <Accordion title="The delivery chooser is missing">
-    These controls need a current HQ with Mobile API v2. Older HQs and Desktop local conversations
-    keep the single-response composer. Update the HQ, reconnect, and open its shared conversation.
-    If Dash reports an identity, sign-in, or certificate error, resolve that error first.
+    On Desktop and the web client on a current HQ, plain **Send** routes automatically on purpose —
+    that's the point of automatic routing, not a missing control. Press **Cmd+Return**
+    (**Ctrl+Enter** on Windows and in the web client) instead of **Send** to open the chooser. If you
+    never want automatic routing, choose **Always ask** under **Settings → Chat → While a response
+    is running** in Desktop. On iPhone, iPad, and Android, **Send** still always opens the chooser —
+    automatic routing is coming to those apps in a later release.
+
+    If the chooser doesn't open even with the shortcut, these controls need a current HQ with Mobile
+    API v2. Older HQs and Desktop local conversations keep the single-response composer. Update the
+    HQ, reconnect, and open its shared conversation. If DashSquad reports an identity, sign-in, or
+    certificate error, resolve that error first.
+  </Accordion>
+  <Accordion title="DashSquad keeps asking instead of routing">
+    Automatic routing falls back to asking whenever it can't be confident. Common causes:
+
+    - No OpenRouter key is configured on the HQ — automatic routing needs one.
+    - **Always ask** is selected under **Settings → Chat → While a response is running**.
+    - The message was genuinely ambiguous between a Steer and a Follow Up.
+    - The routing check timed out. It gives up after 1.5 seconds and asks rather than guess.
+  </Accordion>
+  <Accordion title="A message was auto-steered but I meant a Follow Up">
+    A Steer can't be undone once it's delivered to the agent. Next time, on Desktop or the web
+    client, press **Cmd+Return** (**Ctrl+Enter** on Windows and in the web client) to choose Follow
+    Up yourself before sending. If you'd rather never have this happen, choose **Always ask** under
+    **Settings → Chat → While a response is running**.
   </Accordion>
   <Accordion title="A connection dropped after I pressed Send">
     Accepted Follow Ups are saved at the HQ. Reconnect and let the app check the shared queue

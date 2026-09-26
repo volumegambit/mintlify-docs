@@ -105,14 +105,27 @@ With a hardware keyboard, **Return** inserts a line break and **Cmd+Return** sen
 Send button. You can change the Return-key behavior in Settings; see
 [Composer keys](/chat-with-your-agent#composer-keys).
 
-While an agent is working, keep typing and tap **Send**. Choose **Steer** to guide the response in
-progress, or **Follow Up** to queue a request for afterward. Closing the chooser preserves your text
-and images. The message box clears only after the HQ acknowledges your submission.
+While an agent is working, sending a message no longer interrupts it. By default the HQ decides
+whether your message should steer the response in progress or wait as a Follow Up:
 
-The shared queue shows pending Follow Ups. Edit or remove one before it starts. **Stop** ends the
-current response and advances to the next item. If a response fails, the queue shows **Follow Ups
-paused**. Choose **Resume Follow Ups** when you are ready to continue. A Steer that reaches the HQ
-too late is marked **not delivered** and stays in the conversation for you to review.
+- **Auto-steered** messages change the work in progress and appear in the conversation with that label.
+- **Auto-queued** messages wait in the Follow Up list and run after the current response.
+
+If the HQ isn't sure, DashSquad asks: choose **Steer** to guide the response in progress or
+**Follow Up** to send it afterward. The option the HQ suggests is listed first. To choose yourself,
+touch and hold **Send**. With VoiceOver, use the **Choose Steer or Follow Up** action on the Send
+button. Closing the chooser preserves your text and images; the message box clears only after the
+HQ acknowledges your submission.
+
+The strip above the composer shows what the response is doing and how many Follow Ups are waiting.
+Tap **View** to review, edit, or remove pending Follow Ups. Stop the active response to move
+straight to the next Follow Up. If a response fails, the queue shows **Follow Ups paused** — tap
+**Resume Follow Ups** to continue them. A Steer that reaches the HQ too late is labeled **Auto-steer
+· Not delivered** (or **Steer · Not delivered** when you chose it yourself) and stays in the
+conversation for you to review.
+
+Automatic routing needs an OpenRouter key on the HQ; see
+[Guide a response or queue a follow up](/chat-with-your-agent#guide-a-response-or-queue-a-follow-up).
 
 These controls require a current HQ with Mobile API v2. Older HQs retain the previous single-turn
 composer.

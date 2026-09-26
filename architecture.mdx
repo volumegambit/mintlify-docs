@@ -95,6 +95,14 @@ V2 subscriptions replay a conversation-wide `v2Seq`. V1 retains its own `seq`; t
 independent. A snapshot includes a replay watermark so a client can combine saved messages and new
 events without duplicating text. See [the v2 API](/api-hq-mobile#steer-and-follow-up-mobile-api-v2).
 
+A capable client can also let the HQ choose automatically instead of asking every time. It sends the
+message with a request to route it, rather than a fixed Steer or Follow Up. At the HQ, a decision
+model (TypeSafe's Jev, called through OpenRouter) reads the run's current task and the response so
+far, and answers with a choice and a confidence. A confident answer is applied immediately through
+the same Steer/Follow Up path and labeled as automatic. Anything else — low confidence, a timeout,
+or no decision model configured — is returned to the client as a choice, with the model's best guess
+attached, so the person decides.
+
 ## HQ APIs
 
 The HQ runs two loopback servers for host administration and a separate pinned-TLS listener

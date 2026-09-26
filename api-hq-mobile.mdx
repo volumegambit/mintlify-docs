@@ -1604,6 +1604,9 @@ The v2 API ships with the steer-and-follow-up release. Until that release reache
 
 
 Current clients probe `GET /mobile/v2/health` and require the `chat-input-queue-v1` capability.
+`GET /mobile/v2/health` also lists `auto-delivery-v1` whenever the HQ supports automatic Steer/Follow
+Up routing; a client that also negotiates it in `hello` may send `enqueue_input` with
+`behavior: "auto"` (see [Commands and durable acknowledgements](#commands-and-durable-acknowledgements)).
 Verify `/mobile/v2/identity` with the phone-scoped Mobile bearer before opening conversations.
 The direct mobile listener and hosted relay expose both `/mobile/v1` and `/mobile/v2`. V2 uses the
 same Mobile bearer and, through the relay, the same per-device relay credential. Administrative
@@ -1637,13 +1640,20 @@ compaction, read a fresh bootstrap and preserve already loaded history by canoni
 ### Subscribe before sending
 
 Connect to `/ws/chat` using the existing authenticated native socket or a single-use ticket. The
-first frame selects v2:
+first frame selects v2 and lists the capabilities the client understands:
 
 ```json
-{"type":"hello","contractVersion":2,"capabilities":["chat-input-queue-v1"]}
+{"type":"hello","contractVersion":2,"capabilities":["chat-input-queue-v1","auto-delivery-v1"]}
 ```
 
-Wait for `hello_ack`, then subscribe from the bootstrap's watermark:
+`hello_ack` echoes back only the capabilities the HQ also recognizes:
+
+```json
+{"type":"hello_ack","contractVersion":2,"capabilities":["chat-input-queue-v1","auto-delivery-v1"]}
+```
+
+Send `behavior: "auto"` only on a socket whose `hello_ack` included `auto-delivery-v1`. Wait for
+`hello_ack`, then subscribe from the bootstrap's watermark:
 
 ```json
 {"type":"subscribe_conversation","id":"00000000-0000-4000-8000-000000000002","agentId":"agent-01","conversationId":"00000000-0000-4000-8000-000000000001","sinceV2Seq":0}
@@ -1663,17 +1673,32 @@ a different payload is rejected. A normal `message.id` remains the outer run ide
 | Command | Required correlation | Behavior |
 |---------|----------------------|----------|
 | `message` | Agent, channel, conversation, text, `resumable: true` | Start a run when the conversation is available |
-| `enqueue_input` | Agent, channel, conversation, `inputId`, text, `behavior` | `steer` guides the active run; `followUp` queues a later run |
+| `enqueue_input` | Agent, channel, conversation, `inputId`, text, `behavior` | `steer` guides the active run; `followUp` queues a later run; `auto` (capability-gated) lets the HQ decide |
 | `edit_follow_up` | Conversation, input, `expectedRevision`, text | Update an item that has not started; images replace its attachment set |
 | `remove_follow_up` | Conversation, input, `expectedRevision` | Remove a queued item |
 | `resume_follow_ups` | Conversation, `expectedQueueRevision` | Resume a paused queue |
 | `cancel` | `id` of the exact active run | Stop that run and advance remaining v2 Follow Ups |
 
 Steer additionally requires `expectedActiveTurnId`. It cannot silently target a different run.
+An `auto` enqueue requires `expectedActiveTurnId` too, since it becomes a Steer if the HQ decides
+that way. Send it only on a socket whose `hello_ack` included `auto-delivery-v1`.
+
 A successful enqueue emits `input_accepted`; edits and removals emit `input_updated` and
 `input_removed`. `input_delivered` links the accepted input to its run, segment, and message IDs.
 `queue_paused` and `queue_resumed` publish queue state. Rejections preserve the submitted draft;
 a stale item revision requires a refresh before another edit or removal.
+
+An `auto` enqueue that the HQ cannot confidently route is rejected as `command_rejected` with
+`code: "delivery_choice_required"`, `retryable: false`, and `details: { suggested?: "steer" |
+"followUp", confidence?: number }`. This is emitted only in response to an `auto` command. Open the
+Steer/Follow Up choice with `details.suggested` pre-selected, then re-send the user's choice as a
+new `enqueue_input` with a fresh `id` and `inputId` and an explicit `behavior` — the rejected `auto`
+command creates no pending row, so there is nothing to retry with the same identities. The text and
+any images stay in the composer until a command is accepted.
+
+Pending inputs and stored messages carry `routedBy: "auto"` when the HQ chose the delivery itself;
+the field is absent when the person chose it. Label these entries as automatic in the UI (for
+example **Auto-steered** / **Auto-queued**) using the same Steer/Follow Up presentation otherwise.
 
 A Steer is delivered only at a safe agent boundary. Its permanent user row records `pending`,
 `delivered`, or `not_delivered`; delivered rows are labeled **Steered**. Each delivered Steer starts
