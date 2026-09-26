@@ -25,6 +25,25 @@ OpenRouter models keep the upstream vendor in the name, so they carry a second p
 
 Each provider needs an API key. The recommended approach is through **Desktop**, which stores keys in an AES-256-GCM encrypted credential store. Open **Settings → AI Providers**, select your provider, and paste your key.
 
+You can also add, replace, or remove keys away from your desk:
+
+- **Web app** — open the **AI Providers** tab.
+- **iPhone and iPad** — open **Settings → AI Providers**.
+- **Android** — open **Settings → AI Providers**.
+
+Keys you add there go into the same encrypted store on your HQ, so they show up in Desktop too, and the other way round. Once saved, a key is never shown again anywhere: the apps list only each key's name.
+
+### Use a Claude or ChatGPT subscription
+
+Instead of an API key, you can connect a Claude Pro/Max or ChatGPT subscription from the web app, iPhone, iPad, or Android:
+
+- **Claude** — tap **Sign in with Claude**, open the sign-in page, approve access, then copy the code the page shows and paste it back into the app.
+- **ChatGPT** — tap **Sign in with ChatGPT**. The app shows a short code. Open the page it links to on any device, enter the code, and approve. The app finishes on its own.
+
+Your HQ does the sign-in and keeps the account's tokens; the app never sees them. Connected accounts are listed as **Signed in with Anthropic** or **Signed in with OpenAI** and stay signed in until you remove them.
+
+If you don't see **AI Providers** in an app, update your HQ.
+
 For standalone HQ usage (no Desktop), set credentials via environment variables instead — for example in an `.env` file or your Docker environment.
 
 A trusted [plugin](/plugins#provider-credentials) can also contribute additional providers here, which you connect the same way as the built-in ones.
