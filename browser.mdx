@@ -57,7 +57,7 @@ Turning on the browser gives the agent these tools. Each browser belongs to one 
 | `browser_navigate` | Load a URL, or go back, forward or reload. Returns the new snapshot. | `url` (optional) — http(s) URL to load<br />`action` (optional) — `back`, `forward`, or `reload` |
 | `browser_snapshot` | Read the current page. Refs from an earlier snapshot stop working once you take a new one. | `mode` (optional) — interactive (default): accessibility tree with [ref=...] markers. text: readable page text, no refs, cheaper for reading. |
 | `browser_act` | Act on an element by its ref from the latest snapshot, press a key, or answer an open dialog. Returns the new snapshot. | `action` (required) — `click`, `type`, `select`, `hover`, `press`, `upload`, or `dialog`<br />`ref` (optional) — Element ref from the LATEST snapshot, copied exactly, e.g. "e12" or "f1e12"<br />`value` (optional) — type: text. select: option label. press: key name (Enter, Tab). upload: workspace file path. dialog: accept \| dismiss. |
-| `browser_screenshot` | Capture the page or one element as an image. Prefer browser_snapshot; use this when layout or visuals matter. | `ref` (optional) — Capture only this element<br />`fullPage` (optional) — `true` or `false` |
+| `browser_screenshot` | Capture the page or one element as an image. Prefer browser_snapshot; use this when layout or visuals matter. | `ref` (optional) — Capture only this element<br />`fullPage` (optional) — Capture the whole scrollable page instead of the viewport, up to 8000 px tall. |
 | `browser_tabs` | List, open, switch to or close tabs. `index` comes from the list. | `action` (required) — `list`, `new`, `switch`, or `close`<br />`index` (optional) — a tab number from the list |
 | `browser_profiles` | List your persistent browser profiles, or delete one by name. | `action` (required) — `list` or `delete`<br />`name` (optional) — the profile to delete |
 | `browser_close` | Close this conversation’s browser. A named profile keeps its cookies. | none |
@@ -162,7 +162,9 @@ The browser won't solve CAPTCHAs or sign-in challenges on its own. Tell your age
 
 ### Screenshots in chat
 
-When an agent calls `browser_screenshot`, the tool row in chat shows a thumbnail of the capture on every client, including iPhone, iPad, and Android. In Desktop and the web client, click it to enlarge it; click again to shrink it. On iPhone, iPad, and Android, tap it to open the screenshot full screen, and close it from there. The thumbnail is kept with the conversation.
+When an agent calls `browser_screenshot`, the tool row in chat shows a thumbnail of the capture on every client, including iPhone, iPad, and Android. In Desktop and the web client, click it to enlarge it; click again to shrink it. On iPhone, iPad, and Android, tap it to open the screenshot full screen.
+
+A `fullPage` screenshot can be taller than one screen — up to the tool's 8000 px cap. On iPhone, iPad, and Android, a tall screenshot opens filled to the screen's width instead of shrunk down to fit, so it's readable; pinch to zoom in further, and double-tap to toggle between that width-fill view and the whole page. Close it with the **×** button; on Android, tapping the image also closes it, as long as you haven't pinched in past where it opened. On iPhone and iPad, **Share** and **Save to Photos** save the full screenshot, not just the thumbnail. The thumbnail is kept with the conversation.
 
 ## Limits
 
